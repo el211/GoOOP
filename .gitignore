@@ -1,0 +1,11 @@
+# Generated GoOOP sources
+*_goop.go
+
+# Go build and editor artifacts
+/bin/
+*.exe
+*.test
+*.out
+.idea/
+.vscode/
+.DS_Store
