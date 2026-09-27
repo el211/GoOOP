@@ -1,0 +1,52 @@
+package main
+
+import "fmt"
+
+interface Speaker {
+    Speak() string;
+}
+
+abstract class Animal {
+    private name string
+
+    constructor(name string) {
+        this.name = name
+    }
+
+    abstract Speak() string;
+
+    GetName() string {
+        return this.name
+    }
+
+    Describe() string {
+        return this.GetName() + " says " + this.Speak()
+    }
+}
+
+class Dog extends Animal implements Speaker {
+    constructor(name string) {
+        super(name)
+    }
+
+    override Speak() string {
+        return "woof"
+    }
+}
+
+class Cat extends Animal implements Speaker {
+    constructor(name string) {
+        super(name)
+    }
+
+    override Speak() string {
+        return "meow"
+    }
+}
+
+func main() {
+    dog := new Dog("Rex")
+    cat := new Cat("Milo")
+    fmt.Println(dog.Describe())
+    fmt.Println(cat.Describe())
+}
