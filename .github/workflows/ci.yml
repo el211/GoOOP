@@ -1,0 +1,50 @@
+name: GoOOP CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Format check
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Unit and integration tests
+        run: go test -race ./...
+      - name: Build CLI
+        run: go build -o "$RUNNER_TEMP/goop" ./cmd/goop
+      - name: Check ephemeral compilation (no generated source in project)
+        working-directory: examples/animals
+        run: |
+          test ! -e animals_goop.go
+          actual=$("$RUNNER_TEMP/goop" run)
+          expected=$(printf 'Rex says woof\nMilo says meow')
+          test "$actual" = "$expected"
+          "$RUNNER_TEMP/goop" test
+          "$RUNNER_TEMP/goop" check
+          "$RUNNER_TEMP/goop" build
+          test ! -e animals_goop.go
+          test -x animals
+          ./animals
+          "$RUNNER_TEMP/goop" generate
+          test -e animals_goop.go
+          "$RUNNER_TEMP/goop" clean
+          test ! -e animals_goop.go
+      - name: Check advanced OOP across .goop files without exporting sources
+        working-directory: examples/advanced
+        run: |
+          test ! -e animal_goop.go
+          test ! -e main_goop.go
+          actual=$("$RUNNER_TEMP/goop" run)
+          expected=$(printf 'Animal: woof2\n3\n9\n[Serializable]')
+          test "$actual" = "$expected"
+          "$RUNNER_TEMP/goop" check
+          "$RUNNER_TEMP/goop" test
+          test ! -e animal_goop.go
+          test ! -e main_goop.go
