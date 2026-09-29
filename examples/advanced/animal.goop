@@ -1,0 +1,19 @@
+package main
+
+@Domain("zoo")
+abstract class Animal[T any] {
+    private name T
+    private prefix string = "Animal: "
+
+    constructor(name T) { this.name = name }
+
+    abstract Sound() string;
+
+    Describe() string { return this.prefix + this.Sound() }
+}
+
+class Numbered {
+    private number int = 7
+    constructor(n int) { this.number = n }
+    Number() int { return this.number }
+}

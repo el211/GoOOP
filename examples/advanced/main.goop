@@ -1,0 +1,27 @@
+package main
+
+import "fmt"
+
+@Serializable
+class Dog extends Animal[string], Numbered {
+    private count int = 2
+
+    constructor(name string, n int) {
+        super(name)
+        super.Numbered(n)
+    }
+
+    @Override
+    override Sound() string { return fmt.Sprintf("woof%d", this.count) }
+
+    public Sum(a int) int { return a + 1 }
+    public Sum(a int, b int) int { return a + b }
+}
+
+func main() {
+    dog := new Dog("Rex", 3)
+    fmt.Println(dog.Describe())
+    fmt.Println(dog.Number())
+    fmt.Println(dog.Sum(1) + dog.Sum(3, 4))
+    fmt.Println(GoOOPMetadataDog["annotations"])
+}
