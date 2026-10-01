@@ -135,3 +135,26 @@ func main() { _ = new Child(); _ = Child_Kind() }`
 		}
 	}
 }
+func TestStaticFieldBecomesPackageVar(t *testing.T) {
+	input := `package main
+class Counter {
+   static count int = 0
+   private label string
+   constructor(label string) { this.label = label }
+}
+func main() { _ = new Counter("a"); _ = Counter_count }`
+	generated, err := Compile("static.goop", []byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(generated)
+	for _, want := range []string{"var Counter_count int = 0", "label string"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+	// A static field must NOT appear as a struct field or per-instance assignment.
+	if strings.Contains(got, "count int\n") || strings.Contains(got, "self.count =") {
+		t.Fatalf("static field leaked into the struct/constructor:\n%s", got)
+	}
+}

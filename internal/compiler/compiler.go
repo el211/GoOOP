@@ -1148,6 +1148,9 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			fmt.Fprintf(&b, "%s%s\n", ref.name, ref.args)
 		}
 		for _, f := range c.fields {
+			if f.mods["static"] {
+				continue // static fields become package-level vars, not struct fields
+			}
 			name := f.name
 			if f.mods["public"] {
 				name = exported(name)
@@ -1162,6 +1165,20 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			b.WriteString("}\n")
 		}
 		b.WriteString("}\n\n")
+		for _, f := range c.fields {
+			if !f.mods["static"] {
+				continue
+			}
+			if f.initializer != "" {
+				init, err := rewrite(f.initializer, c, classes, false)
+				if err != nil {
+					return "", fmt.Errorf("%s.%s initializer: %w", c.name, f.name, err)
+				}
+				fmt.Fprintf(&b, "var %s_%s %s = %s\n\n", c.name, f.name, f.typ, init)
+			} else {
+				fmt.Fprintf(&b, "var %s_%s %s\n\n", c.name, f.name, f.typ)
+			}
+		}
 		fmt.Fprintf(&b, "func (self *%s%s) __goopBind(v any) {\n", c.name, usedParams(c.typeArgs))
 		for _, ref := range allParents(c) {
 			fmt.Fprintf(&b, "self.%s.__goopBind(v)\n", ref.name)
@@ -1211,8 +1228,8 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			}
 			body = rest
 			for _, f := range c.fields {
-				if f.initializer == "" {
-					continue
+				if f.initializer == "" || f.mods["static"] {
+					continue // static fields initialize once, at package level
 				}
 				converted, err := rewrite(f.initializer, c, classes, false)
 				if err != nil {
