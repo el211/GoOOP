@@ -62,6 +62,45 @@ func main() {
 	}
 }
 
+func TestStaticMemberDotAccess(t *testing.T) {
+	src := `package main
+import "fmt"
+class Counter {
+    static total int = 0
+    static Bump(n int) int { Counter.total = Counter.total + n; return Counter.total }
+}
+func main() {
+    fmt.Println(Counter.Bump(2))
+    fmt.Println(Counter.total)
+}`
+	out, err := Compile("counter.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{"var Counter_total int = 0", "func Counter_Bump(n int) int", "Counter_total = Counter_total + n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/static\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "counter_goop.go"), out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s", err, result)
+	}
+	if !strings.Contains(string(result), "2\n2") {
+		t.Fatalf("unexpected output %q", result)
+	}
+}
+
 func TestOverrideAllowsParameterRename(t *testing.T) {
 	src := `package main
 class Parent { virtual Sum(first int, second int) int { return first+second } }

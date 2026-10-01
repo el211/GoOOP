@@ -1379,12 +1379,40 @@ type replacement struct {
 	text       string
 }
 
+// staticSymbol maps a `Class.member` static access to its generated package-level
+// symbol (`Class_member`), matching the naming used when the member is emitted.
+func staticSymbol(c *class, member string) (string, bool) {
+	for _, f := range c.fields {
+		if f.name == member && f.mods["static"] {
+			return c.name + "_" + member, true
+		}
+	}
+	for _, m := range c.methods {
+		if m.name == member && m.mods["static"] && !m.ctor {
+			name := member
+			if m.mods["public"] {
+				name = exported(name)
+			}
+			return c.name + "_" + name, true
+		}
+	}
+	return "", false
+}
+
 // rewrite only touches identifiers seen by the lexer, never comments or strings.
 func rewrite(body string, c *class, classes map[string]*class, constructor bool) (string, error) {
 	ts := lex(body)
 	var edits []replacement
 	for i := 0; i < len(ts); i++ {
 		t := ts[i]
+		// Class.member -> Class_member for static field/method access.
+		if target := classes[t.value]; target != nil && i+2 < len(ts) && ts[i+1].value == "." {
+			if sym, ok := staticSymbol(target, ts[i+2].value); ok {
+				edits = append(edits, replacement{t.start, ts[i+2].end, sym})
+				i += 2
+				continue
+			}
+		}
 		if t.value == "new" && i+2 < len(ts) && isIdentStart(ts[i+1].value[0]) && (ts[i+2].value == "(" || ts[i+2].value == "[") {
 			name := ts[i+1].value
 			if target := classes[name]; target != nil && target.abstract {
