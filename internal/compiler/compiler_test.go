@@ -135,6 +135,21 @@ func main() { _ = new Child(); _ = Child_Kind() }`
 		}
 	}
 }
+func TestEnumEmitsTypedConstants(t *testing.T) {
+	src := `package main
+enum Color { Red, Green, Blue }
+func main() { _ = Color_Green }`
+	out, err := Compile("color.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{"type Color int", "Color_Red Color = iota", "Color_Green\n", "Color_names = [...]string{\"Red\", \"Green\", \"Blue\"}", "func (e Color) String() string"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+}
 func TestStaticFieldBecomesPackageVar(t *testing.T) {
 	input := `package main
 class Counter {

@@ -43,10 +43,16 @@ type iface struct {
 	annotations      []string
 	methods          []method
 }
+type enumDecl struct {
+	name        string
+	members     []string
+	annotations []string
+}
 type unit struct {
 	header     string
 	classes    []*class
 	interfaces []iface
+	enums      []enumDecl
 	functions  []string
 }
 type parser struct {
@@ -218,7 +224,7 @@ func (p *parser) balanced(open, close string) (start, end token, err error) {
 func (p *parser) parse() (*unit, error) {
 	u := &unit{}
 	first := 0
-	for first < len(p.toks) && p.toks[first].value != "class" && p.toks[first].value != "interface" && p.toks[first].value != "abstract" && p.toks[first].value != "func" && p.toks[first].value != "@" {
+	for first < len(p.toks) && p.toks[first].value != "class" && p.toks[first].value != "interface" && p.toks[first].value != "abstract" && p.toks[first].value != "func" && p.toks[first].value != "enum" && p.toks[first].value != "@" {
 		first++
 	}
 	if first == len(p.toks) {
@@ -252,6 +258,13 @@ func (p *parser) parse() (*unit, error) {
 			}
 			in.annotations = annotations
 			u.interfaces = append(u.interfaces, in)
+		case p.peek("enum"):
+			e, err := p.parseEnum()
+			if err != nil {
+				return nil, err
+			}
+			e.annotations = annotations
+			u.enums = append(u.enums, e)
 		case p.peek("func"):
 			if len(annotations) > 0 {
 				return nil, p.fail(p.at, "annotations on free functions not supported")
@@ -528,6 +541,41 @@ func (p *parser) parseMethod(name string, mods map[string]bool) (method, error) 
 		p.take()
 	}
 	return m, nil
+}
+// parseEnum accepts `enum Name { A, B, C }`; members are identifiers separated
+// by commas and/or newlines, with an optional trailing comma.
+func (p *parser) parseEnum() (enumDecl, error) {
+	p.take() // enum
+	if p.at == len(p.toks) {
+		return enumDecl{}, p.fail(p.at, "enum requires a name")
+	}
+	e := enumDecl{name: p.take().value}
+	if _, err := p.expect("{"); err != nil {
+		return enumDecl{}, err
+	}
+	seen := map[string]bool{}
+	for p.at < len(p.toks) && !p.peek("}") {
+		if p.peek(",") {
+			p.take()
+			continue
+		}
+		tok := p.take()
+		if !isIdentStart(tok.value[0]) {
+			return enumDecl{}, p.fail(p.at, "enum member must be an identifier")
+		}
+		if seen[tok.value] {
+			return enumDecl{}, p.fail(p.at, "duplicate enum member "+tok.value)
+		}
+		seen[tok.value] = true
+		e.members = append(e.members, tok.value)
+	}
+	if _, err := p.expect("}"); err != nil {
+		return enumDecl{}, err
+	}
+	if len(e.members) == 0 {
+		return enumDecl{}, p.fail(p.at, "enum requires at least one member")
+	}
+	return e, nil
 }
 func (p *parser) parseInterface() (iface, error) {
 	p.take()
@@ -1140,6 +1188,28 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			fmt.Fprintf(&b, "%s(%s) %s\n", methodName(m), m.params, m.returns)
 		}
 		b.WriteString("}\n\n")
+	}
+	for _, e := range u.enums {
+		fmt.Fprintf(&b, "type %s int\n\nconst (\n", e.name)
+		for i, m := range e.members {
+			if i == 0 {
+				fmt.Fprintf(&b, "%s_%s %s = iota\n", e.name, m, e.name)
+			} else {
+				fmt.Fprintf(&b, "%s_%s\n", e.name, m)
+			}
+		}
+		b.WriteString(")\n\n")
+		fmt.Fprintf(&b, "var %s_names = [...]string{", e.name)
+		for i, m := range e.members {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%q", m)
+		}
+		b.WriteString("}\n\n")
+		fmt.Fprintf(&b, "func (e %s) String() string {\n", e.name)
+		fmt.Fprintf(&b, "if int(e) >= 0 && int(e) < len(%s_names) {\nreturn %s_names[e]\n}\n", e.name, e.name)
+		fmt.Fprintf(&b, "return %q\n}\n\n", e.name)
 	}
 	for _, c := range u.classes {
 		slots := virtualMethods(c)
