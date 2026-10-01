@@ -38,6 +38,7 @@ type class struct {
 	interfaces                                     []string
 	fields                                         []field
 	methods                                        []method
+	nested                                         []*class
 }
 type iface struct {
 	name, typeParams string
@@ -55,6 +56,9 @@ type unit struct {
 	interfaces []iface
 	enums      []enumDecl
 	functions  []string
+	// nestedDotted maps an outer class name to the set of its nested class
+	// simple names, so `Outer.Inner` can be rewritten to `Outer_Inner`.
+	nestedDotted map[string]map[string]bool
 }
 type parser struct {
 	src  string
@@ -252,6 +256,7 @@ func (p *parser) parse() (*unit, error) {
 			}
 			c.annotations = annotations
 			u.classes = append(u.classes, c)
+			hoistNested(u, c)
 		case p.peek("interface"):
 			in, err := p.parseInterface()
 			if err != nil {
@@ -287,6 +292,22 @@ func (p *parser) parse() (*unit, error) {
 		}
 	}
 	return u, nil
+}
+// hoistNested flattens nested classes into top-level classes named
+// `Outer_Inner`, recording the dotted mapping so `Outer.Inner` can be rewritten.
+func hoistNested(u *unit, c *class) {
+	for _, n := range c.nested {
+		if u.nestedDotted == nil {
+			u.nestedDotted = map[string]map[string]bool{}
+		}
+		if u.nestedDotted[c.name] == nil {
+			u.nestedDotted[c.name] = map[string]bool{}
+		}
+		u.nestedDotted[c.name][n.name] = true
+		n.name = c.name + "_" + n.name
+		u.classes = append(u.classes, n)
+		hoistNested(u, n)
+	}
 }
 func (p *parser) parseClass() (*class, error) {
 	c := &class{}
@@ -388,6 +409,17 @@ func (p *parser) parseClass() (*class, error) {
 		}
 		if p.at == len(p.toks) {
 			break
+		}
+		if p.peek("class") {
+			nc, err := p.parseClass() // modifiers already consumed any abstract/final
+			if err != nil {
+				return nil, err
+			}
+			nc.abstract = nc.abstract || mods["abstract"]
+			nc.final = nc.final || mods["final"]
+			nc.annotations = annotations
+			c.nested = append(c.nested, nc)
+			continue
 		}
 		isProperty := false
 		if p.peek("property") {

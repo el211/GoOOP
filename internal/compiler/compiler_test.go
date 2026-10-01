@@ -135,6 +135,28 @@ func main() { _ = new Child(); _ = Child_Kind() }`
 		}
 	}
 }
+func TestNestedClassFlattensToTopLevel(t *testing.T) {
+	src := `package main
+class Outer {
+    private label string
+    constructor(label string) { this.label = label }
+    class Inner {
+        private v int = 5
+        Get() int { return this.v }
+    }
+}
+func main() { _ = new Outer("x"); _ = new Outer_Inner().Get() }`
+	out, err := Compile("outer.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{"type Outer struct", "type Outer_Inner struct", "func NewOuter_Inner() *Outer_Inner", "func (self *Outer_Inner) Get() int"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+}
 func TestFinalClassCannotBeExtended(t *testing.T) {
 	src := `package main
 final class Sealed { Value() string { return "x" } }
