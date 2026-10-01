@@ -389,8 +389,19 @@ func (p *parser) parseClass() (*class, error) {
 		if p.at == len(p.toks) {
 			break
 		}
+		isProperty := false
+		if p.peek("property") {
+			p.take()
+			isProperty = true
+			if mods["static"] {
+				return nil, p.fail(p.at, "property cannot be static")
+			}
+		}
 		name := p.take()
 		if p.peek("(") {
+			if isProperty {
+				return nil, p.fail(p.at, "property must declare a field, not a method")
+			}
 			m, err := p.parseMethod(name.value, mods)
 			if err != nil {
 				return nil, err
@@ -410,6 +421,9 @@ func (p *parser) parseClass() (*class, error) {
 				return nil, err
 			}
 			f.annotations = annotations
+			if isProperty {
+				f.mods["property"] = true
+			}
 			c.fields = append(c.fields, f)
 		}
 	}
@@ -1247,7 +1261,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				continue // static fields become package-level vars, not struct fields
 			}
 			name := f.name
-			if f.mods["public"] {
+			if f.mods["public"] && !f.mods["property"] {
 				name = exported(name)
 			}
 			fmt.Fprintf(&b, "%s %s\n", name, f.typ)
@@ -1331,7 +1345,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 					return "", fmt.Errorf("%s.%s initializer: %w", c.name, f.name, err)
 				}
 				fieldName := f.name
-				if f.mods["public"] {
+				if f.mods["public"] && !f.mods["property"] {
 					fieldName = exported(fieldName)
 				}
 				fmt.Fprintf(&b, "self.%s = %s\n", fieldName, converted)
@@ -1417,6 +1431,14 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				}
 			}
 			fmt.Fprintf(&b, "default: panic(%q)\n}\n}\n", c.name+"."+name+": no overload for argument count")
+		}
+		for _, f := range c.fields {
+			if !f.mods["property"] {
+				continue
+			}
+			accessor := exported(f.name)
+			fmt.Fprintf(&b, "func (self *%s%s) Get%s() %s {\nreturn self.%s\n}\n\n", c.name, usedParams(c.typeArgs), accessor, f.typ, f.name)
+			fmt.Fprintf(&b, "func (self *%s%s) Set%s(value %s) {\nself.%s = value\n}\n\n", c.name, usedParams(c.typeArgs), accessor, f.typ, f.name)
 		}
 		for _, in := range c.interfaces {
 			fmt.Fprintf(&b, "var _ %s = (*%s%s)(nil)\n", in, c.name, usedParams(c.typeArgs))

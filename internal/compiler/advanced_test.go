@@ -62,6 +62,47 @@ func main() {
 	}
 }
 
+func TestPropertyGeneratesAccessorsEndToEnd(t *testing.T) {
+	src := `package main
+import "fmt"
+class Person {
+    property name string = "anon"
+    constructor(name string) { this.name = name }
+}
+func main() {
+    p := new Person("Ada")
+    fmt.Println(p.GetName())
+    p.SetName("Grace")
+    fmt.Println(p.GetName())
+}`
+	out, err := Compile("person.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{"func (self *Person) GetName() string", "func (self *Person) SetName(value string)", "name string"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/prop\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "person_goop.go"), out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s", err, result)
+	}
+	if !strings.Contains(string(result), "Ada\nGrace") {
+		t.Fatalf("unexpected output %q", result)
+	}
+}
+
 func TestEnumDotAccessRunsEndToEnd(t *testing.T) {
 	src := `package main
 import "fmt"
