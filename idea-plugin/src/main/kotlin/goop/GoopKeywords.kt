@@ -5,7 +5,7 @@ object GoopKeywords {
     val KEYWORDS: Set<String> = setOf(
         // OOP extensions
         "class", "interface", "enum", "abstract", "extends", "implements",
-        "constructor", "override", "new", "this", "super",
+        "constructor", "override", "new", "this", "super", "property",
         "private", "public", "protected", "static", "final", "virtual",
         // Go keywords
         "break", "case", "chan", "const", "continue", "default", "defer",

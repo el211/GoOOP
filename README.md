@@ -235,6 +235,8 @@ method bodies, plus the explicit GoOOP constructs documented below.
 | Field initializers | Supported: fields initialize in declaration order, after superclass construction and before the class constructor body. |
 | `static` members | Supported: `static` fields become package-level `var ClassName_field` initialized once; `static` methods become `func ClassName_Method(...)`. Access both as `ClassName.member` inside `.goop`. Static members cannot combine with `abstract`/`virtual`/`override` or be overloaded. |
 | Enums | Supported: `enum Color { Red, Green, Blue }` lowers to a `type Color int` with `iota` constants, a generated `String()` method, and `Color.Member` access. Enum members with associated data or methods are not yet supported. |
+| Properties | Supported: `property name string` generates `GetName()`/`SetName(value string)` over an unexported backing field. Supports an initializer (`property name string = "anon"`) and `this.name` access inside the class. Cannot be `static`. |
+| `final` / sealed | Supported: `final class X` cannot be extended; a `final` method cannot be overridden; both are rejected at compile time. `final` cannot combine with `abstract`/`static` or constructors. |
 | Annotations / metadata | `@Name` and `@Name(...)` accepted on class, interface, field and method declarations; class/annotated-member metadata is available through `GoOOPMetadataClassName`. Annotations are metadata, **not executable decorators**. |
 | Visibility | `private`, `protected`, `public` parsed; inherited private access via `this` and direct named `super` access receives diagnostics. Public field/method symbols use Go capitalization. Full Java access enforcement is not guaranteed across arbitrary Go expressions or native `.go` sources. |
 | Cross-file inheritance | All `.goop` declarations **within a Go package directory** are resolved together. Imported cross-package classes use normal Go package APIs, not implicit `extends` across packages. |
@@ -329,8 +331,8 @@ GoOOP today, grouped by how hard each is given that GoOOP rewrites to Go.
 | --- | --- | --- |
 | `static` fields / methods | ✅ supported | Lowered to package-level vars/funcs; access via `Class.member`. |
 | Enums (named constants) | ✅ supported | Lowered to a typed `int` + `iota` constants, `String()`, and `Enum.Member` access. Methods/fields on enums not yet supported. |
-| Properties (getters/setters sugar) | ❌ planned | Generate `GetX`/`SetX` from a property declaration. |
-| `final` / sealed enforcement | ❌ planned | Keyword parses; add compile-time checks. |
+| Properties (getters/setters sugar) | ✅ supported | `property x T` generates `GetX`/`SetX` over an unexported backing field. |
+| `final` / sealed enforcement | ✅ supported | `final class`/`final` method rejected at compile time when extended/overridden. |
 | Nested / inner classes | ❌ planned | Lower to package-level types with name mangling. |
 
 **B. Needs a typed expression frontend (semantic IR, not text rewrite)**
