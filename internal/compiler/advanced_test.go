@@ -62,6 +62,48 @@ func main() {
 	}
 }
 
+func TestNestedClassDotAccessRunsEndToEnd(t *testing.T) {
+	src := `package main
+import "fmt"
+class Outer {
+    class Inner {
+        private v int
+        constructor(v int) { this.v = v }
+        Get() int { return this.v }
+    }
+}
+func main() {
+    var box Outer.Inner = *new Outer.Inner(7)
+    fmt.Println(box.Get())
+}`
+	out, err := Compile("nested.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{"var box Outer_Inner = *NewOuter_Inner(7)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/nested\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nested_goop.go"), out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s", err, result)
+	}
+	if strings.TrimSpace(string(result)) != "7" {
+		t.Fatalf("unexpected output %q", result)
+	}
+}
+
 func TestPropertyGeneratesAccessorsEndToEnd(t *testing.T) {
 	src := `package main
 import "fmt"
