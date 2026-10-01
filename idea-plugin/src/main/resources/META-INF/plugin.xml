@@ -1,0 +1,51 @@
+<idea-plugin>
+    <id>com.goop.lang</id>
+    <name>GoOOP</name>
+    <version>0.1.0</version>
+    <vendor email="saireelias@gmail.com">Elias</vendor>
+
+    <description><![CDATA[
+        Language support for <b>GoOOP</b> (<code>.goop</code>) &mdash; Go with
+        object-oriented syntax (<code>class</code>, <code>interface</code>,
+        <code>abstract</code>, <code>extends</code>, <code>implements</code>,
+        <code>constructor</code>, <code>override</code>, <code>new</code>,
+        <code>this</code>, <code>super</code>) that transpiles to Go.
+        <br/>
+        Provides file recognition, syntax highlighting, brace matching,
+        comment toggling and a color settings page.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType
+            name="GoOOP file"
+            language="GoOOP"
+            implementationClass="goop.GoopFileType"
+            fieldName="INSTANCE"
+            extensions="goop"/>
+
+        <lang.parserDefinition
+            language="GoOOP"
+            implementationClass="goop.GoopParserDefinition"/>
+
+        <lang.syntaxHighlighterFactory
+            language="GoOOP"
+            implementationClass="goop.GoopSyntaxHighlighterFactory"/>
+
+        <lang.braceMatcher
+            language="GoOOP"
+            implementationClass="goop.GoopBraceMatcher"/>
+
+        <lang.commenter
+            language="GoOOP"
+            implementationClass="goop.GoopCommenter"/>
+
+        <annotator
+            language="GoOOP"
+            implementationClass="goop.GoopAnnotator"/>
+
+        <colorSettingsPage
+            implementation="goop.GoopColorSettingsPage"/>
+    </extensions>
+</idea-plugin>
