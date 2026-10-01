@@ -135,6 +135,35 @@ func main() { _ = new Child(); _ = Child_Kind() }`
 		}
 	}
 }
+func TestFinalClassCannotBeExtended(t *testing.T) {
+	src := `package main
+final class Sealed { Value() string { return "x" } }
+class Sub extends Sealed {}
+func main() { _ = new Sub() }`
+	_, err := Compile("final.goop", []byte(src))
+	if err == nil || !strings.Contains(err.Error(), "cannot extend final class") {
+		t.Fatalf("expected final-class rejection, got: %v", err)
+	}
+}
+func TestFinalMethodCannotBeOverridden(t *testing.T) {
+	src := `package main
+class Base { final Value() string { return "base" } }
+class Child extends Base { override Value() string { return "child" } }
+func main() { _ = new Child() }`
+	_, err := Compile("finalm.goop", []byte(src))
+	if err == nil || !strings.Contains(err.Error(), "cannot override final") {
+		t.Fatalf("expected final-method rejection, got: %v", err)
+	}
+}
+func TestFinalClassCompilesWhenNotExtended(t *testing.T) {
+	src := `package main
+final class Box { private v int = 1
+    Get() int { return this.v } }
+func main() { _ = new Box().Get() }`
+	if _, err := Compile("okfinal.goop", []byte(src)); err != nil {
+		t.Fatalf("final class should compile: %v", err)
+	}
+}
 func TestEnumEmitsTypedConstants(t *testing.T) {
 	src := `package main
 enum Color { Red, Green, Blue }

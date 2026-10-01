@@ -34,6 +34,7 @@ type class struct {
 	otherParents                                   []parentRef
 	annotations                                    []string
 	abstract                                       bool
+	final                                          bool
 	interfaces                                     []string
 	fields                                         []field
 	methods                                        []method
@@ -230,7 +231,7 @@ func (p *parser) parse() (*unit, error) {
 	if first == len(p.toks) {
 		return nil, fmt.Errorf("no class, interface or function declarations")
 	}
-	if first > 0 && p.toks[first-1].value == "abstract" {
+	for first > 0 && (p.toks[first-1].value == "abstract" || p.toks[first-1].value == "final") {
 		first--
 	}
 	u.header = strings.TrimSpace(p.src[:p.toks[first].start])
@@ -244,7 +245,7 @@ func (p *parser) parse() (*unit, error) {
 			return nil, err
 		}
 		switch {
-		case p.peek("abstract") || p.peek("class"):
+		case p.peek("abstract") || p.peek("final") || p.peek("class"):
 			c, err := p.parseClass()
 			if err != nil {
 				return nil, err
@@ -289,9 +290,16 @@ func (p *parser) parse() (*unit, error) {
 }
 func (p *parser) parseClass() (*class, error) {
 	c := &class{}
-	if p.peek("abstract") {
-		c.abstract = true
-		p.take()
+	for p.peek("abstract") || p.peek("final") {
+		switch p.take().value {
+		case "abstract":
+			c.abstract = true
+		case "final":
+			c.final = true
+		}
+	}
+	if c.abstract && c.final {
+		return nil, p.fail(p.at, "class cannot be both abstract and final")
 	}
 	if _, err := p.expect("class"); err != nil {
 		return nil, err
@@ -455,7 +463,7 @@ func typeParamArgs(params string) (string, error) {
 
 func (p *parser) modifiers() map[string]bool {
 	m := map[string]bool{}
-	for p.peek("public") || p.peek("private") || p.peek("protected") || p.peek("abstract") || p.peek("virtual") || p.peek("override") || p.peek("static") {
+	for p.peek("public") || p.peek("private") || p.peek("protected") || p.peek("abstract") || p.peek("virtual") || p.peek("override") || p.peek("static") || p.peek("final") {
 		m[p.take().value] = true
 	}
 	return m
@@ -666,6 +674,9 @@ func validate(u *unit) error {
 			if m.mods["static"] && (m.mods["abstract"] || m.mods["virtual"] || m.mods["override"] || m.ctor) {
 				return fmt.Errorf("%s.%s: unsupported static modifier combination", c.name, m.name)
 			}
+			if m.mods["final"] && (m.mods["abstract"] || m.mods["static"] || m.ctor) {
+				return fmt.Errorf("%s.%s: unsupported final modifier combination", c.name, m.name)
+			}
 		}
 		for name, group := range methodsByName {
 			if len(group) < 2 {
@@ -713,6 +724,9 @@ func validate(u *unit) error {
 		for _, ref := range allParents(c) {
 			if err := walkAncestors(ref.name, map[string]bool{c.name: true}); err != nil {
 				return err
+			}
+			if parent := classes[ref.name]; parent != nil && parent.final {
+				return fmt.Errorf("%s: cannot extend final class %s", c.name, ref.name)
 			}
 		}
 		// Go embedding cannot select an inherited method that is promoted by
@@ -810,6 +824,9 @@ func validate(u *unit) error {
 						if pm.name == m.name && !pm.ctor && !pm.mods["static"] {
 							if pm.mods["private"] {
 								return fmt.Errorf("%s.%s: cannot override private superclass method", c.name, m.name)
+							}
+							if pm.mods["final"] {
+								return fmt.Errorf("%s.%s: cannot override final superclass method", c.name, m.name)
 							}
 							found = true
 							specialized := pm
