@@ -233,6 +233,7 @@ method bodies, plus the explicit GoOOP constructs documented below.
 | Method overloads | Supported **by distinct argument count**, provided all overloads have the same return type and are concrete nonvirtual instance methods. The public generated dispatcher takes `...any` and performs runtime type assertions. This is *not* Java's static overload resolution. |
 | Override signatures | Compare parameter and result **types**, ignoring parameter names; direct and transitive generic superclass type arguments are specialized during validation. |
 | Field initializers | Supported: fields initialize in declaration order, after superclass construction and before the class constructor body. |
+| `static` members | Supported: `static` fields become package-level `var ClassName_field` initialized once; `static` methods become `func ClassName_Method(...)`. Access both as `ClassName.member` inside `.goop`. Static members cannot combine with `abstract`/`virtual`/`override` or be overloaded. |
 | Annotations / metadata | `@Name` and `@Name(...)` accepted on class, interface, field and method declarations; class/annotated-member metadata is available through `GoOOPMetadataClassName`. Annotations are metadata, **not executable decorators**. |
 | Visibility | `private`, `protected`, `public` parsed; inherited private access via `this` and direct named `super` access receives diagnostics. Public field/method symbols use Go capitalization. Full Java access enforcement is not guaranteed across arbitrary Go expressions or native `.go` sources. |
 | Cross-file inheritance | All `.goop` declarations **within a Go package directory** are resolved together. Imported cross-package classes use normal Go package APIs, not implicit `extends` across packages. |
@@ -325,7 +326,7 @@ GoOOP today, grouped by how hard each is given that GoOOP rewrites to Go.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `static` fields / methods | ❌ planned | Keyword parses; no class-level statics yet. Lower to package-level vars/funcs. |
+| `static` fields / methods | ✅ supported | Lowered to package-level vars/funcs; access via `Class.member`. |
 | Enums (typed, with methods) | ❌ planned | Lower to a named type + generated constants/values. |
 | Properties (getters/setters sugar) | ❌ planned | Generate `GetX`/`SetX` from a property declaration. |
 | `final` / sealed enforcement | ❌ planned | Keyword parses; add compile-time checks. |
