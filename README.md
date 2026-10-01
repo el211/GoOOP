@@ -6,6 +6,63 @@ GoOOP is a small, experimental source-to-source compiler. Write `.goop` files wi
 
 > **Status:** v0.3.0 experimental compiler. Go is already object-oriented through structs, methods, interfaces and composition. GoOOP adds an *optional classical-OOP syntax layer*, not new native language semantics.
 
+## Why GoOOP?
+
+Go is deliberately minimal: it gives you structs, methods, interfaces and
+composition, but no `class`, no constructors, no `extends`, no `super`, and no
+annotations. That minimalism is a strength for Go, but developers coming from
+Java, C#, Kotlin or TypeScript often want the familiar classical-OOP vocabulary
+for modelling domains — especially inheritance hierarchies, constructors and
+metadata.
+
+GoOOP exists to bridge that gap **without leaving the Go ecosystem**:
+
+- **Familiar syntax, zero runtime cost.** You write classical OOP; it compiles
+  down to ordinary, idiomatic Go (struct embedding, methods, interfaces). There
+  is no VM, no reflection-heavy framework, and no GoOOP runtime to ship.
+- **No fork of Go, no new toolchain to trust.** GoOOP is a thin source-to-source
+  pass that hands generated Go to the *standard* `go` toolchain. Everything the
+  Go community already knows — modules, `go test`, the race detector, `go vet`,
+  profiling — keeps working.
+- **Your repository stays clean.** Generated Go lives only in a temporary build
+  overlay that is deleted afterwards, so you commit `.goop`, not machine output.
+- **Incremental adoption.** `.goop` and plain `.go` files coexist in the same
+  package. You can use classes where they help and drop to raw Go everywhere
+  else.
+
+In short: keep Go's performance, tooling and deployment story, but express
+object models in the classical style when that is the clearer way to say it.
+
+## How GoOOP works
+
+GoOOP is a **transpiler** (source-to-source compiler), not an interpreter or a
+language runtime. The pipeline for `goop run` / `build` / `test` / `check` is:
+
+1. **Discover.** From the current directory, walk upward to the enclosing
+   `go.mod` and collect every `.goop` file in each package (skipping nested
+   modules).
+2. **Lex & parse.** Each `.goop` file is tokenized and parsed while preserving
+   byte offsets, so positions in the generated Go map back to your source.
+3. **Resolve the class model.** Classes, interfaces, inheritance (`extends` /
+   `implements`), generics, overloads and annotations are validated together
+   across the whole package (cyclic inheritance, abstract-method coverage,
+   override signatures, etc.).
+4. **Rewrite to Go.** The OOP constructs are lowered to native Go: classes →
+   structs with embedding, constructors → `NewT(...)` functions, `this`/`super`
+   → receiver/embedded-field access, `virtual`/`override` → self-dispatch,
+   annotations → `GoOOPMetadata*` maps. The result is `gofmt`-formatted Go.
+5. **Build via overlay.** The generated Go is written to an OS temp directory and
+   handed to the standard Go toolchain through `go -overlay=<json>`, so `go`
+   compiles it as virtual `*_goop.go` files *alongside* your real `.go` files.
+6. **Clean up.** On success **and** failure the temp directory is removed. Your
+   project tree is never touched — unless you explicitly run `goop generate`,
+   which writes the generated Go next to your `.goop` for inspection or native
+   interop.
+
+Because the heavy lifting is done by the real Go compiler, GoOOP adds syntax,
+not semantics: anything Go can't express, GoOOP can't magically add (see
+[Boundaries of this release](#boundaries-of-this-release)).
+
 ## Install
 
 Requires Go 1.22 or newer:
@@ -137,6 +194,28 @@ In any JetBrains IDE: **Settings → Plugins → ⚙ → Install Plugin from Dis
 pick `idea-plugin/build/distributions/goop-intellij-0.1.0.zip`, and restart.
 
 See [`idea-plugin/README.md`](idea-plugin/README.md) for details.
+
+### Known issues & fixes
+
+#### `@` annotations were underlined in red (fixed)
+
+- **Symptom:** In the IntelliJ plugin, an annotation such as `@Serializable`
+  showed a red error squiggle under the `@`, even though the annotation is valid
+  GoOOP and compiles fine.
+- **Cause:** This was purely a plugin highlighting bug, **not** a compiler error.
+  The plugin's lexer had no rule for the `@` character, so it fell through to the
+  "bad character" branch and was flagged as an error token.
+- **Fix:** The lexer now recognizes `@` followed by an identifier as a dedicated
+  **annotation token** (covering both `@Name` and `@Name(...)`), highlighted as
+  metadata — the same style IntelliJ uses for Java annotations like `@Override`.
+- **To get the fix:** rebuild the plugin (`gradle buildPlugin`) and reinstall the
+  zip via **Settings → Plugins → ⚙ → Install Plugin from Disk…**, then restart.
+  If IntelliJ keeps the old copy because the version string is unchanged,
+  uninstall the previous GoOOP plugin first.
+
+> Note: this only affected editor highlighting. `goop run`/`build`/`test` have
+> always accepted `@Name` and `@Name(...)` on class, interface, field and method
+> declarations (see [Annotations / metadata](#language-support-v030)).
 
 ## Language support (v0.3.0)
 
