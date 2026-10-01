@@ -62,6 +62,39 @@ func main() {
 	}
 }
 
+func TestEnumDotAccessRunsEndToEnd(t *testing.T) {
+	src := `package main
+import "fmt"
+enum Color { Red, Green, Blue }
+func main() {
+    c := Color.Green
+    fmt.Println(int(c), c.String(), Color.Blue)
+}`
+	out, err := Compile("color.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "c := Color_Green") {
+		t.Fatalf("enum dot access not rewritten:\n%s", out)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/enum\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "color_goop.go"), out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s", err, result)
+	}
+	if !strings.Contains(string(result), "1 Green Blue") {
+		t.Fatalf("unexpected output %q", result)
+	}
+}
+
 func TestStaticMemberDotAccess(t *testing.T) {
 	src := `package main
 import "fmt"
