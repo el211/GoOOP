@@ -316,6 +316,46 @@ be provided reliably by a text-rewrite pass alone. Ordinary `.go` and `.goop`
 files can coexist, but Go source can access package-level declarations according
 to Go's native rules.
 
+### Roadmap to full OOP parity
+
+A feature-by-feature view of what classical OOP (Java / C# style) offers versus
+GoOOP today, grouped by how hard each is given that GoOOP rewrites to Go.
+
+**A. Rewrite-friendly — planned incremental work**
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| `static` fields / methods | ❌ planned | Keyword parses; no class-level statics yet. Lower to package-level vars/funcs. |
+| Enums (typed, with methods) | ❌ planned | Lower to a named type + generated constants/values. |
+| Properties (getters/setters sugar) | ❌ planned | Generate `GetX`/`SetX` from a property declaration. |
+| `final` / sealed enforcement | ❌ planned | Keyword parses; add compile-time checks. |
+| Nested / inner classes | ❌ planned | Lower to package-level types with name mangling. |
+
+**B. Needs a typed expression frontend (semantic IR, not text rewrite)**
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Same-arity overloading by type | ❌ | Needs type inference on arguments. |
+| Full `private` / `protected` enforcement | ⚠️ partial | Diagnostics exist; full enforcement needs a resolver. |
+| Constructor-time virtual dispatch | ❌ | Java's partially-initialized subclass semantics. |
+| Covariant return types | ❌ | Override currently compares exact result types. |
+| Overloaded virtual / interface methods | ❌ | Requires typed dispatch tables. |
+
+**C. Hard or un-idiomatic in Go — may never reach 1:1 parity**
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Operator overloading | ❌ | Go has none; would need expression lowering. |
+| Exceptions (`try`/`catch`/`finally`) | ❌ | Go idiom is error values + `panic`/`recover`. |
+| Executable annotations / decorators | ❌ | Annotations are metadata only. |
+| `java.lang.reflect` parity | ❌ | Go reflection differs fundamentally. |
+| Cross-**package** inheritance | ❌ | Resolution is per Go package. |
+
+**Design stance:** GoOOP intends to be a *pragmatic* classical-OOP layer over
+idiomatic Go, not a Java clone. Category A is a normal backlog; category B is
+gated on the typed IR below; category C fights Go's design and is out of scope
+unless it can lower cleanly.
+
 ## Roadmap
 
 1. Typed expression IR and static (including same-arity) overload resolution.
