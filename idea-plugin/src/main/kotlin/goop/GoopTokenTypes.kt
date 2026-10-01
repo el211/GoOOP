@@ -13,6 +13,7 @@ object GoopTypes {
     val KEYWORD = GoopTokenType("KEYWORD")
     val TYPE = GoopTokenType("TYPE")
     val CONSTANT = GoopTokenType("CONSTANT")
+    val ANNOTATION = GoopTokenType("ANNOTATION")
     val IDENTIFIER = GoopTokenType("IDENTIFIER")
 
     // Literals

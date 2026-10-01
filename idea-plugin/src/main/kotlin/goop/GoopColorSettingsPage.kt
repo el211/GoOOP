@@ -58,6 +58,7 @@ class GoopColorSettingsPage : ColorSettingsPage {
             AttributesDescriptor("Keyword", GoopSyntaxHighlighter.KEYWORD),
             AttributesDescriptor("Built-in type", GoopSyntaxHighlighter.TYPE),
             AttributesDescriptor("Constant", GoopSyntaxHighlighter.CONSTANT),
+            AttributesDescriptor("Annotation", GoopSyntaxHighlighter.ANNOTATION),
             AttributesDescriptor("Identifier", GoopSyntaxHighlighter.IDENTIFIER),
             AttributesDescriptor("Class name", GoopAnnotator.CLASS_NAME),
             AttributesDescriptor("Number", GoopSyntaxHighlighter.NUMBER),

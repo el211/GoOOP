@@ -15,6 +15,7 @@ class GoopSyntaxHighlighter : SyntaxHighlighterBase() {
         GoopTypes.KEYWORD -> KEYWORD_KEYS
         GoopTypes.TYPE -> TYPE_KEYS
         GoopTypes.CONSTANT -> CONSTANT_KEYS
+        GoopTypes.ANNOTATION -> ANNOTATION_KEYS
         GoopTypes.NUMBER -> NUMBER_KEYS
         GoopTypes.STRING -> STRING_KEYS
         GoopTypes.LINE_COMMENT -> LINE_COMMENT_KEYS
@@ -33,6 +34,7 @@ class GoopSyntaxHighlighter : SyntaxHighlighterBase() {
         val KEYWORD = key("GOOP_KEYWORD", DefaultLanguageHighlighterColors.KEYWORD)
         val TYPE = key("GOOP_TYPE", DefaultLanguageHighlighterColors.NUMBER)
         val CONSTANT = key("GOOP_CONSTANT", DefaultLanguageHighlighterColors.CONSTANT)
+        val ANNOTATION = key("GOOP_ANNOTATION", DefaultLanguageHighlighterColors.METADATA)
         val IDENTIFIER = key("GOOP_IDENTIFIER", DefaultLanguageHighlighterColors.IDENTIFIER)
         val NUMBER = key("GOOP_NUMBER", DefaultLanguageHighlighterColors.NUMBER)
         val STRING = key("GOOP_STRING", DefaultLanguageHighlighterColors.STRING)
@@ -50,6 +52,7 @@ class GoopSyntaxHighlighter : SyntaxHighlighterBase() {
         private val KEYWORD_KEYS = arrayOf(KEYWORD)
         private val TYPE_KEYS = arrayOf(TYPE)
         private val CONSTANT_KEYS = arrayOf(CONSTANT)
+        private val ANNOTATION_KEYS = arrayOf(ANNOTATION)
         private val IDENTIFIER_KEYS = arrayOf(IDENTIFIER)
         private val NUMBER_KEYS = arrayOf(NUMBER)
         private val STRING_KEYS = arrayOf(STRING)
