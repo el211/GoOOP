@@ -62,6 +62,52 @@ func main() {
 	}
 }
 
+func TestPrivateNestedClassIsUnexportedAndRuns(t *testing.T) {
+	src := `package main
+import "fmt"
+class Outer {
+    private class Secret {
+        private v int
+        constructor(v int) { this.v = v }
+        Reveal() int { return this.v }
+    }
+    Make() int { return new Outer.Secret(9).Reveal() }
+}
+func main() { fmt.Println(new Outer().Make()) }`
+	out, err := Compile("secret.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{"type outer_Secret struct", "func newOuter_Secret(", "newOuter_Secret(9)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+	// The private class must NOT leak as exported Go symbols.
+	for _, bad := range []string{"type Outer_Secret struct", "func NewOuter_Secret", "GoOOPMetadataOuter_Secret"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("private class leaked exported symbol %q:\n%s", bad, got)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/secret\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secret_goop.go"), out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s", err, result)
+	}
+	if strings.TrimSpace(string(result)) != "9" {
+		t.Fatalf("unexpected output %q", result)
+	}
+}
+
 func TestNestedClassDotAccessRunsEndToEnd(t *testing.T) {
 	src := `package main
 import "fmt"

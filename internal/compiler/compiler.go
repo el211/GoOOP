@@ -991,7 +991,14 @@ func checkVisibilityAccess(u *unit, classes map[string]*class) error {
 	for _, c := range u.classes {
 		top := topLevelOf(c)
 		for _, ref := range allParents(c) {
-			if p := classes[ref.name]; p != nil && !classAccessible(p, top) {
+			p := classes[ref.name]
+			if p == nil {
+				continue
+			}
+			if p.visibility == "private" {
+				return fmt.Errorf("%s: a private class (%s) cannot be used as a superclass", c.name, ref.name)
+			}
+			if !classAccessible(p, top) {
 				return fmt.Errorf("%s: cannot extend %s class %s", c.name, p.visibility, ref.name)
 			}
 		}
@@ -1321,8 +1328,24 @@ func containsParent(c *class, name string) bool {
 	return false
 }
 
+func unexported(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// goTypeName is the Go identifier emitted for a class. A `private` class is
+// unexported so native Go in other packages cannot reach it, keeping private
+// implementations out of the generated public API.
+func goTypeName(c *class) string {
+	if c.visibility == "private" {
+		return unexported(c.name)
+	}
+	return c.name
+}
 func ctorName(c *class) string {
-	if c.abstract {
+	if c.abstract || c.visibility == "private" {
 		return "new" + c.name
 	}
 	return "New" + c.name
@@ -1404,7 +1427,8 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 	}
 	for _, c := range u.classes {
 		slots := virtualMethods(c)
-		fmt.Fprintf(&b, "type %s%s struct {\n", c.name, declaredParams(c.typeParams))
+		gn := goTypeName(c) // Go type identifier (unexported when the class is private)
+		fmt.Fprintf(&b, "type %s%s struct {\n", gn, declaredParams(c.typeParams))
 		for _, ref := range allParents(c) {
 			fmt.Fprintf(&b, "%s%s\n", ref.name, ref.args)
 		}
@@ -1435,12 +1459,12 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				if err != nil {
 					return "", fmt.Errorf("%s.%s initializer: %w", c.name, f.name, err)
 				}
-				fmt.Fprintf(&b, "var %s_%s %s = %s\n\n", c.name, f.name, f.typ, init)
+				fmt.Fprintf(&b, "var %s_%s %s = %s\n\n", gn, f.name, f.typ, init)
 			} else {
-				fmt.Fprintf(&b, "var %s_%s %s\n\n", c.name, f.name, f.typ)
+				fmt.Fprintf(&b, "var %s_%s %s\n\n", gn, f.name, f.typ)
 			}
 		}
-		fmt.Fprintf(&b, "func (self *%s%s) __goopBind(v any) {\n", c.name, usedParams(c.typeArgs))
+		fmt.Fprintf(&b, "func (self *%s%s) __goopBind(v any) {\n", gn, usedParams(c.typeArgs))
 		for _, ref := range allParents(c) {
 			fmt.Fprintf(&b, "self.%s.__goopBind(v)\n", ref.name)
 		}
@@ -1465,7 +1489,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			fmt.Fprintf(&b, "func %s%s(%s) *%s%s {\nself := &%s%s{}\n", ctorFunc, declaredParams(c.typeParams), params, c.name, usedParams(c.typeArgs), c.name, usedParams(c.typeArgs))
+			fmt.Fprintf(&b, "func %s%s(%s) *%s%s {\nself := &%s%s{}\n", ctorFunc, declaredParams(c.typeParams), params, gn, usedParams(c.typeArgs), gn, usedParams(c.typeArgs))
 			calls, rest, err := leadingSupers(body, c)
 			if err != nil {
 				return "", fmt.Errorf("%s constructor: %w", c.name, err)
@@ -1532,9 +1556,9 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				emittedName = fmt.Sprintf("__goopOverload_%s_%d", name, arity)
 			}
 			if m.mods["static"] {
-				fmt.Fprintf(&b, "func %s_%s%s(%s) %s {\n", c.name, emittedName, declaredParams(c.typeParams), m.params, m.returns)
+				fmt.Fprintf(&b, "func %s_%s%s(%s) %s {\n", gn, emittedName, declaredParams(c.typeParams), m.params, m.returns)
 			} else {
-				fmt.Fprintf(&b, "func (self *%s%s) %s(%s) %s {\n", c.name, usedParams(c.typeArgs), emittedName, m.params, m.returns)
+				fmt.Fprintf(&b, "func (self *%s%s) %s(%s) %s {\n", gn, usedParams(c.typeArgs), emittedName, m.params, m.returns)
 			}
 			if m.hasBody {
 				converted, err := rewrite(m.body, c, classes, enums, false)
@@ -1558,7 +1582,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			if m.mods["public"] {
 				name = exported(name)
 			}
-			fmt.Fprintf(&b, "func (self *%s%s) %s(args ...any) %s {\n", c.name, usedParams(c.typeArgs), name, m.returns)
+			fmt.Fprintf(&b, "func (self *%s%s) %s(args ...any) %s {\n", gn, usedParams(c.typeArgs), name, m.returns)
 			b.WriteString("switch len(args) {\n")
 			for _, member := range group {
 				arity, _ := paramCount(member.params)
@@ -1589,15 +1613,20 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				continue
 			}
 			accessor := exported(f.name)
-			fmt.Fprintf(&b, "func (self *%s%s) Get%s() %s {\nreturn self.%s\n}\n\n", c.name, usedParams(c.typeArgs), accessor, f.typ, f.name)
-			fmt.Fprintf(&b, "func (self *%s%s) Set%s(value %s) {\nself.%s = value\n}\n\n", c.name, usedParams(c.typeArgs), accessor, f.typ, f.name)
+			fmt.Fprintf(&b, "func (self *%s%s) Get%s() %s {\nreturn self.%s\n}\n\n", gn, usedParams(c.typeArgs), accessor, f.typ, f.name)
+			fmt.Fprintf(&b, "func (self *%s%s) Set%s(value %s) {\nself.%s = value\n}\n\n", gn, usedParams(c.typeArgs), accessor, f.typ, f.name)
 		}
 		for _, in := range c.interfaces {
-			fmt.Fprintf(&b, "var _ %s = (*%s%s)(nil)\n", in, c.name, usedParams(c.typeArgs))
+			fmt.Fprintf(&b, "var _ %s = (*%s%s)(nil)\n", in, gn, usedParams(c.typeArgs))
 		}
 		// Metadata registry uses built-in Go values: no duplicate type
-		// declarations when multiple .goop files belong to one package.
-		fmt.Fprintf(&b, "var GoOOPMetadata%s = map[string]any{\n", c.name)
+		// declarations when multiple .goop files belong to one package. A
+		// private class gets an unexported metadata var so it stays package-local.
+		metaName := "GoOOPMetadata" + c.name
+		if c.visibility == "private" {
+			metaName = "goOOPMetadata" + c.name
+		}
+		fmt.Fprintf(&b, "var %s = map[string]any{\n", metaName)
 		fmt.Fprintf(&b, "\"class\": %q, \"abstract\": %t, \"parent\": %q,\n", c.name, c.abstract, c.parent)
 		fmt.Fprintf(&b, "\"annotations\": %#v,\n", c.annotations)
 		b.WriteString("\"members\": map[string][]string{\n")
@@ -1653,7 +1682,7 @@ type replacement struct {
 func staticSymbol(c *class, member string) (string, bool) {
 	for _, f := range c.fields {
 		if f.name == member && f.mods["static"] {
-			return c.name + "_" + member, true
+			return goTypeName(c) + "_" + member, true
 		}
 	}
 	for _, m := range c.methods {
@@ -1662,7 +1691,7 @@ func staticSymbol(c *class, member string) (string, bool) {
 			if m.mods["public"] {
 				name = exported(name)
 			}
-			return c.name + "_" + name, true
+			return goTypeName(c) + "_" + name, true
 		}
 	}
 	return "", false
@@ -1674,9 +1703,13 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 	var edits []replacement
 	for i := 0; i < len(ts); i++ {
 		t := ts[i]
-		// Enum.Member -> Enum_Member.
+		// Enum.Member -> Enum_Member, and Outer.Inner -> Go type name of Outer_Inner.
 		if members := enums[t.value]; members != nil && i+2 < len(ts) && ts[i+1].value == "." && members[ts[i+2].value] {
-			edits = append(edits, replacement{t.start, ts[i+2].end, t.value + "_" + ts[i+2].value})
+			repl := t.value + "_" + ts[i+2].value
+			if cl := classes[repl]; cl != nil {
+				repl = goTypeName(cl)
+			}
+			edits = append(edits, replacement{t.start, ts[i+2].end, repl})
 			i += 2
 			continue
 		}
@@ -1696,6 +1729,9 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 					return "", fmt.Errorf("cannot instantiate abstract class %s", mangled)
 				}
 				ctorName := "New" + mangled
+				if target.visibility == "private" {
+					ctorName = "new" + mangled
+				}
 				open := genericCallOpen(ts, i+4)
 				if open < len(ts) && ts[open].value == "(" {
 					arity, _, err := invocationCount(ts, open)
@@ -1718,6 +1754,9 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 				return "", fmt.Errorf("cannot instantiate abstract class %s", name)
 			}
 			ctorName := "New" + name
+			if target := classes[name]; target != nil && target.visibility == "private" {
+				ctorName = "new" + name
+			}
 			open := genericCallOpen(ts, i+2)
 			if open < len(ts) && ts[open].value == "(" {
 				arity, _, err := invocationCount(ts, open)
