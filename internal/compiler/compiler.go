@@ -44,6 +44,8 @@ type class struct {
 	// enclosing is the top-level class that lexically contains this class, or
 	// "" for a top-level class. Used for Java `private` nested-class scoping.
 	enclosing string
+	// pos is the source byte offset of the class name, for diagnostics.
+	pos int
 }
 type iface struct {
 	name, typeParams string
@@ -359,7 +361,9 @@ func (p *parser) parseClass() (*class, error) {
 	if p.at == len(p.toks) {
 		return nil, p.fail(p.at, "missing class name")
 	}
-	c.name = p.take().value
+	nameTok := p.take()
+	c.name = nameTok.value
+	c.pos = nameTok.start
 	if p.peek("[") {
 		open, close, err := p.balanced("[", "]")
 		if err != nil {
