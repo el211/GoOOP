@@ -1,5 +1,7 @@
 package compiler
 
+import "strings"
+
 // Symbol is a resolved top-level declaration within one GoOOP package.
 type Symbol struct {
 	Name       string // GoOOP source name (map key)
@@ -51,6 +53,99 @@ func (s *SymbolTable) classFor(name string) *class {
 	return nil
 }
 
+// baseTypeName strips a leading pointer and any generic argument list.
+func baseTypeName(t string) string {
+	t = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(t), "*"))
+	if i := strings.IndexByte(t, '['); i >= 0 {
+		t = t[:i]
+	}
+	return strings.TrimSpace(t)
+}
+
+// classExtends reports whether child transitively extends ancestor.
+func (s *SymbolTable) classExtends(child, ancestor string) bool {
+	seen := map[string]bool{}
+	var walk func(name string) bool
+	walk = func(name string) bool {
+		if name == ancestor {
+			return true
+		}
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		c := s.classFor(name)
+		if c == nil {
+			return false
+		}
+		for _, ref := range allParents(c) {
+			if walk(ref.name) {
+				return true
+			}
+		}
+		return false
+	}
+	c := s.classFor(child)
+	if c == nil {
+		return false
+	}
+	for _, ref := range allParents(c) {
+		if walk(ref.name) {
+			return true
+		}
+	}
+	return false
+}
+
+// classImplements reports whether a class (or an ancestor) declares `iface` in
+// its implements list.
+func (s *SymbolTable) classImplements(className, iface string) bool {
+	seen := map[string]bool{}
+	var walk func(name string) bool
+	walk = func(name string) bool {
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		c := s.classFor(name)
+		if c == nil {
+			return false
+		}
+		for _, in := range c.interfaces {
+			if baseTypeName(in) == iface {
+				return true
+			}
+		}
+		for _, ref := range allParents(c) {
+			if walk(ref.name) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(className)
+}
+
+// isSubtype reports whether a value of type `sub` is usable where `super` is
+// expected, following the class hierarchy (never textual guessing). It covers
+// identity, pointer covariance (*Derived <: *Base), and a class implementing an
+// interface return type.
+func (s *SymbolTable) isSubtype(sub, super string) bool {
+	sub = normalizeType(sub)
+	super = normalizeType(super)
+	if sub == super {
+		return true
+	}
+	if strings.HasPrefix(sub, "*") && strings.HasPrefix(super, "*") {
+		return s.classExtends(baseTypeName(sub), baseTypeName(super))
+	}
+	// Covariance to an interface the returned class implements.
+	if ifaceSym, ok := s.byName[super]; ok && ifaceSym.Kind == "interface" {
+		return s.classImplements(baseTypeName(sub), super)
+	}
+	return false
+}
+
 // buildSymbols constructs the package symbol table from the resolved class map
 // plus the interface and enum declarations. A class's GoName encodes its
 // visibility, so every consumer that resolves a type reference through the table
@@ -78,12 +173,27 @@ func buildSymbols(classes map[string]*class, interfaces []iface, enums []enumDec
 	// more than one signature. Every member of such a set — wherever declared —
 	// is mangled, so parent and child emit and call consistent Go names.
 	for _, c := range classes {
+		// Consider every method name visible on c, including inherited ones, so
+		// that a class which merely inherits an overload set (declaring nothing
+		// itself) still forces its ancestors' members to be mangled consistently.
 		names := map[string]bool{}
-		for _, m := range c.methods {
-			if !m.ctor {
-				names[m.name] = true
+		seen := map[string]bool{}
+		var collectNames func(cl *class)
+		collectNames = func(cl *class) {
+			if cl == nil || seen[cl.name] {
+				return
+			}
+			seen[cl.name] = true
+			for _, m := range cl.methods {
+				if !m.ctor {
+					names[m.name] = true
+				}
+			}
+			for _, ref := range allParents(cl) {
+				collectNames(st.classFor(ref.name))
 			}
 		}
+		collectNames(c)
 		for name := range names {
 			members := st.mergedMethods(c, name)
 			if len(members) < 2 {

@@ -796,6 +796,7 @@ func validate(u *unit) error {
 			}
 		}
 	}
+	syms := buildSymbols(classes, u.interfaces, u.enums)
 	for _, c := range u.classes {
 		// Traverse every edge, including additional embedded superclasses.
 		var walkAncestors func(string, map[string]bool) error
@@ -824,12 +825,18 @@ func validate(u *unit) error {
 				return fmt.Errorf("%s: cannot extend final class %s", c.name, ref.name)
 			}
 		}
-		// Go embedding cannot select an inherited method that is promoted by
-		// two direct parents. Demand an explicit child override to disambiguate.
+		// Go embedding cannot select an inherited method promoted by two direct
+		// parents with the SAME signature. Distinct signatures are overloads and
+		// merge; an identical signature from two parents is a real conflict that
+		// demands an explicit child override. Keys are name#paramSignature.
+		memberKey := func(m method) string {
+			sig, _ := overloadSuffix(m.params)
+			return m.name + "#" + sig
+		}
 		declared := map[string]bool{}
 		for _, m := range c.methods {
 			if !m.ctor && !m.mods["static"] {
-				declared[m.name] = true
+				declared[memberKey(m)] = true
 			}
 		}
 		promoted := map[string]string{}
@@ -842,14 +849,14 @@ func validate(u *unit) error {
 				}
 				visited[parent.name] = true
 				for _, m := range parent.methods {
-					if m.ctor || m.mods["static"] {
+					if m.ctor || m.mods["static"] || m.mods["private"] {
 						continue
 					}
-					if prior, ok := promoted[m.name]; ok && prior != ref.name && !declared[m.name] {
-						// Leave this diagnostic to the shared validation pass below.
-						promoted[m.name] = prior + "," + ref.name
+					key := memberKey(m)
+					if prior, ok := promoted[key]; ok && prior != ref.name && !declared[key] {
+						promoted[key] = prior + "," + ref.name
 					} else if !ok {
-						promoted[m.name] = ref.name
+						promoted[key] = ref.name
 					}
 				}
 				for _, next := range allParents(parent) {
@@ -858,9 +865,10 @@ func validate(u *unit) error {
 			}
 			collect(classes[ref.name])
 		}
-		for methodName, origin := range promoted {
-			if strings.Contains(origin, ",") && !declared[methodName] {
-				return fmt.Errorf("%s: inherited method %s is ambiguous between %s; explicitly override it", c.name, methodName, origin)
+		for key, origin := range promoted {
+			if strings.Contains(origin, ",") && !declared[key] {
+				name := key[:strings.IndexByte(key, '#')]
+				return fmt.Errorf("%s: inherited method %s is ambiguous between %s; explicitly override it", c.name, name, origin)
 			}
 		}
 		if !c.abstract {
@@ -927,8 +935,24 @@ func validate(u *unit) error {
 							specialized := pm
 							specialized.params = substituteNames(pm.params, binding)
 							specialized.returns = substituteNames(pm.returns, binding)
-							if signature(specialized) != signature(m) {
-								return fmt.Errorf("%s.%s: override signature differs from superclass %s", c.name, m.name, parent.name)
+							psig, _ := overloadSuffix(specialized.params)
+							msig, _ := overloadSuffix(m.params)
+							if psig != msig {
+								return fmt.Errorf("%s.%s: override parameters differ from superclass %s", c.name, m.name, parent.name)
+							}
+							// Return types must be identical or covariant (the
+							// override may return a subtype through the hierarchy).
+							if normalizeType(m.returns) != normalizeType(specialized.returns) {
+								if !syms.isSubtype(m.returns, specialized.returns) {
+									return fmt.Errorf("%s.%s: override return type %q is not %q or a covariant subtype", c.name, m.name, strings.TrimSpace(m.returns), strings.TrimSpace(specialized.returns))
+								}
+								// Covariant returns are representable in Go only when
+								// the overridden method is not virtually dispatched;
+								// a virtual/abstract parent would need a dispatch
+								// bridge (planned milestone).
+								if pm.mods["virtual"] || pm.mods["abstract"] || pm.mods["override"] {
+									return fmt.Errorf("%s.%s: covariant return type on a virtual/abstract override is not yet supported (parent %s.%s participates in virtual dispatch); use an identical return type, a non-virtual parent, or an interface", c.name, m.name, parent.name, pm.name)
+								}
 							}
 						}
 					}
@@ -1070,45 +1094,6 @@ func substituteNames(source string, substitutions map[string]string) string {
 	return out.String()
 }
 
-func signature(m method) string {
-	source := "package p\ntype X interface { M(" + m.params + ") " + m.returns + " }"
-	f, err := goparser.ParseFile(gotoken.NewFileSet(), "signature.go", source, 0)
-	if err != nil {
-		return strings.Join(strings.Fields(m.params+" -> "+m.returns), "")
-	}
-	typ := f.Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type.(*ast.InterfaceType).Methods.List[0].Type.(*ast.FuncType)
-	var parts []string
-	for _, v := range typ.Params.List {
-		var out strings.Builder
-		if err := format.Node(&out, gotoken.NewFileSet(), v.Type); err != nil {
-			continue
-		}
-		count := len(v.Names)
-		if count == 0 {
-			count = 1
-		}
-		for i := 0; i < count; i++ {
-			parts = append(parts, strings.Join(strings.Fields(out.String()), ""))
-		}
-	}
-	var returns []string
-	if typ.Results != nil {
-		for _, v := range typ.Results.List {
-			var out strings.Builder
-			if err := format.Node(&out, gotoken.NewFileSet(), v.Type); err != nil {
-				continue
-			}
-			count := len(v.Names)
-			if count == 0 {
-				count = 1
-			}
-			for i := 0; i < count; i++ {
-				returns = append(returns, strings.Join(strings.Fields(out.String()), ""))
-			}
-		}
-	}
-	return strings.Join(parts, ",") + "->" + strings.Join(returns, ",")
-}
 func hasSuperConstructor(s string) bool {
 	ts := lex(s)
 	for i := 0; i+1 < len(ts); i++ {
