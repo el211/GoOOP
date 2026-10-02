@@ -15,10 +15,24 @@ type Symbol struct {
 // it instead of rewriting identifiers textually.
 type SymbolTable struct {
 	byName map[string]*Symbol
+	// mangled marks the method declarations (by mangleKey) that participate in an
+	// overload set somewhere in the class hierarchy and must therefore be emitted
+	// (and called) under a signature-mangled Go name.
+	mangled map[string]bool
 }
 
 func newSymbolTable() *SymbolTable {
-	return &SymbolTable{byName: map[string]*Symbol{}}
+	return &SymbolTable{byName: map[string]*Symbol{}, mangled: map[string]bool{}}
+}
+
+// isMangled reports whether a method declared on `origin` with the given name and
+// parameter list is part of an overload set (and thus emitted under a mangled name).
+func (s *SymbolTable) isMangled(origin, name, params string) bool {
+	sig, err := overloadSuffix(params)
+	if err != nil {
+		return false
+	}
+	return s.mangled[mangleKey(origin, name, sig)]
 }
 
 func (s *SymbolTable) add(sym *Symbol) { s.byName[sym.Name] = sym }
@@ -58,6 +72,29 @@ func buildSymbols(classes map[string]*class, interfaces []iface, enums []enumDec
 	}
 	for _, e := range enums {
 		st.add(&Symbol{Name: e.name, GoName: e.name, Kind: "enum"})
+	}
+	// Determine which method declarations must be mangled: any method whose name
+	// resolves (from some class's full inheritance view) to an overload set with
+	// more than one signature. Every member of such a set — wherever declared —
+	// is mangled, so parent and child emit and call consistent Go names.
+	for _, c := range classes {
+		names := map[string]bool{}
+		for _, m := range c.methods {
+			if !m.ctor {
+				names[m.name] = true
+			}
+		}
+		for name := range names {
+			members := st.mergedMethods(c, name)
+			if len(members) < 2 {
+				continue
+			}
+			for _, rm := range members {
+				if sig, err := overloadSuffix(rm.orig.params); err == nil {
+					st.mangled[mangleKey(rm.origin, name, sig)] = true
+				}
+			}
+		}
 	}
 	return st
 }

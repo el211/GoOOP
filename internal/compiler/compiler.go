@@ -1519,12 +1519,6 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			b.WriteString(resolvedBody)
 			b.WriteString("\nself.__goopBind(self)\nreturn self\n}\n\n")
 		}
-		methodGroups := map[string][]method{}
-		for _, m := range c.methods {
-			if !m.ctor {
-				methodGroups[m.name] = append(methodGroups[m.name], m)
-			}
-		}
 		for _, m := range c.methods {
 			if m.ctor {
 				continue
@@ -1534,9 +1528,10 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				name = exported(name)
 			}
 			emittedName := name
-			if len(methodGroups[m.name]) > 1 {
-				// Overloaded: emit a distinct, signature-mangled Go name. Call
-				// sites are resolved to this name by the typed-IR overload pass.
+			if syms.isMangled(c.name, m.name, m.params) {
+				// Part of an overload set (own or inherited): emit a distinct,
+				// signature-mangled Go name. Call sites are resolved to this name
+				// by the typed-IR overload pass.
 				emittedName = overloadMethodName(m)
 			}
 			mp, mr := resolveSignature(m.params, m.returns, syms)

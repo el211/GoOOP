@@ -298,37 +298,85 @@ func (ctx *inferCtx) classByType(t string) *class {
 	return nil
 }
 
-// overloadGroup returns the own-class method set named `name` from the nearest
-// class (self first) that declares it. Overloads live in one class; an override
-// shadows the parent declaration rather than forming an overload with it, which
-// matches how the methods are emitted (grouped per class). An inherited,
-// genuinely-overloaded method is found on the ancestor that declares it, whose
-// mangled names are promoted through Go embedding.
-func (ctx *inferCtx) overloadGroup(c *class, name string) []method {
-	seen := map[string]bool{}
-	var walk func(*class) []method
-	walk = func(cl *class) []method {
-		if cl == nil || seen[cl.name] {
-			return nil
+// resolvedMethod is a method as seen from a querying class: `orig` is the method
+// exactly as declared on `origin` (used for naming, which must match emission),
+// while `sub` has generic type parameters substituted into the querying class's
+// context (used for argument matching and return-type inference).
+type resolvedMethod struct {
+	orig   method
+	sub    method
+	origin string
+}
+
+// mergedMethods resolves the full inherited overload set for `name` visible on
+// class c: it walks the whole hierarchy, substitutes generic superclass type
+// arguments, collapses overrides (a subclass signature replaces the ancestor's),
+// and omits private ancestor members. The result is the merged set a Java
+// subclass would see — so an inherited Show(int) and an own Show(string) coexist.
+func (s *SymbolTable) mergedMethods(c *class, name string) []resolvedMethod {
+	var out []resolvedMethod
+	sigSeen := map[string]bool{}
+	visited := map[string]bool{}
+	var walk func(cl *class, binding map[string]string, inherited bool)
+	walk = func(cl *class, binding map[string]string, inherited bool) {
+		if cl == nil || visited[cl.name] {
+			return
 		}
-		seen[cl.name] = true
-		var own []method
+		visited[cl.name] = true
 		for _, m := range cl.methods {
-			if m.name == name && !m.ctor {
-				own = append(own, m)
+			if m.ctor || m.name != name {
+				continue
 			}
-		}
-		if len(own) > 0 {
-			return own
+			if inherited && m.mods["private"] {
+				continue // private members are not inherited
+			}
+			sub := m
+			if len(binding) > 0 {
+				sub.params = substituteNames(m.params, binding)
+				sub.returns = substituteNames(m.returns, binding)
+			}
+			sig, err := overloadSuffix(sub.params)
+			if err != nil {
+				continue
+			}
+			if sigSeen[sig] {
+				continue // a nearer (overriding) declaration already won
+			}
+			sigSeen[sig] = true
+			out = append(out, resolvedMethod{orig: m, sub: sub, origin: cl.name})
 		}
 		for _, ref := range allParents(cl) {
-			if g := walk(ctx.syms.classFor(ref.name)); g != nil {
-				return g
+			parent := s.classFor(ref.name)
+			if parent == nil {
+				continue
 			}
+			nb := map[string]string{}
+			vars := strings.Split(parent.typeArgs, ",")
+			actual := splitTypeArguments(ref.args)
+			for i, v := range vars {
+				if i < len(actual) && strings.TrimSpace(v) != "" {
+					nb[strings.TrimSpace(v)] = substituteNames(strings.TrimSpace(actual[i]), binding)
+				}
+			}
+			walk(parent, nb, true)
 		}
-		return nil
 	}
-	return walk(c)
+	walk(c, nil, false)
+	return out
+}
+
+// mangleKey identifies one method declaration for mangling decisions.
+func mangleKey(origin, name, paramSig string) string {
+	return origin + "\x00" + name + "\x00" + paramSig
+}
+
+// subMethods extracts the substituted methods from a resolved set, for matching.
+func subMethods(rms []resolvedMethod) []method {
+	out := make([]method, len(rms))
+	for i, rm := range rms {
+		out[i] = rm.sub
+	}
+	return out
 }
 
 func (ctx *inferCtx) fieldType(c *class, name string) string {
@@ -437,20 +485,19 @@ func (ctx *inferCtx) inferCall(x *ast.CallExpr) string {
 		if c == nil {
 			return ""
 		}
-		members := ctx.overloadGroup(c, fun.Sel.Name)
+		members := ctx.syms.mergedMethods(c, fun.Sel.Name)
 		if len(members) == 0 {
 			return ""
 		}
 		idx := 0
 		if len(members) > 1 {
-			args := ctx.inferArgs(x.Args)
-			chosen, err := selectOverload(fun.Sel.Name, members, args)
+			chosen, err := selectOverload(fun.Sel.Name, subMethods(members), ctx.inferArgs(x.Args))
 			if err != nil {
 				return ""
 			}
 			idx = chosen
 		}
-		return normalizeIfType(members[idx].returns)
+		return normalizeIfType(members[idx].sub.returns)
 	}
 	return ""
 }
@@ -583,16 +630,16 @@ func (ctx *inferCtx) rewriteCall(call *ast.CallExpr) {
 		if c == nil {
 			return
 		}
-		members := ctx.overloadGroup(c, fun.Sel.Name)
+		members := ctx.syms.mergedMethods(c, fun.Sel.Name)
 		if len(members) < 2 {
 			return // not overloaded
 		}
-		idx, err := selectOverload(fun.Sel.Name, members, ctx.inferArgs(call.Args))
+		idx, err := selectOverload(fun.Sel.Name, subMethods(members), ctx.inferArgs(call.Args))
 		if err != nil {
 			ctx.fail(err)
 			return
 		}
-		fun.Sel = ast.NewIdent(overloadMethodName(members[idx]))
+		fun.Sel = ast.NewIdent(overloadMethodName(members[idx].orig))
 	case *ast.Ident:
 		cl, ok := ctx.ctors[fun.Name]
 		if !ok {
