@@ -229,8 +229,8 @@ method bodies, plus the explicit GoOOP constructs documented below.
 | Multiple inheritance | Supported for distinct superclass embeddings: `class C extends A, B`. Shared method names must be explicitly overridden; each parent is an independently embedded Go value, not a Java object identity. |
 | Abstract classes / interfaces | Supported with compilation checks and Go interfaces. |
 | Class generics | Supported using Go type parameters, e.g. `class Box[T any]` and `new Box[int](3)`; superclass type arguments such as `extends Base[string]` supported. |
-| Constructor overloads | Supported **by distinct argument count**. The compiler resolves `new T(...)` and `super(...)` statically and generates `NewT__N` symbols where applicable. No overloads with identical arity and different types. |
-| Method overloads | Supported **by distinct argument count**, provided all overloads have the same return type and are concrete nonvirtual instance methods. The public generated dispatcher takes `...any` and performs runtime type assertions. This is *not* Java's static overload resolution. |
+| Constructor overloads | Supported **by argument count and type**, resolved statically by the typed IR. `new T(...)` and `super(...)` are matched against the constructor set using inferred argument types; each overload emits a distinct signature-mangled symbol. |
+| Method overloads | Supported **by argument count and type** (Java-style, resolved at compile time). Overloads may differ in parameter types and return type; they must be concrete, nonvirtual instance methods. Each call site is resolved against the symbol table and typed AST and rewritten to a distinct generated method — there is no runtime dispatcher. Ambiguous, unmatched or uninferrable calls are rejected with a GoOOP diagnostic. |
 | Override signatures | Compare parameter and result **types**, ignoring parameter names; direct and transitive generic superclass type arguments are specialized during validation. |
 | Field initializers | Supported: fields initialize in declaration order, after superclass construction and before the class constructor body. |
 | `static` members | Supported: `static` fields become package-level `var ClassName_field` initialized once; `static` methods become `func ClassName_Method(...)`. Access both as `ClassName.member` inside `.goop`. Static members cannot combine with `abstract`/`virtual`/`override` or be overloaded. |
@@ -282,8 +282,8 @@ class Box[T any] {
     Get() T { return this.value }
 }
 class Calculator {
-    Add(x int) int { return x + 1 }
-    Add(x int, y int) int { return x + y }
+    Add(x int) int { return x + 1 }          // arity overload
+    Add(x int, y int) int { return x + y }   // arity overload
 }
 func example() {
     box := new Box[string]("hello")
@@ -293,8 +293,42 @@ func example() {
 ```
 
 The metadata for `Box` is exposed as `GoOOPMetadataBox`, a Go `map[string]any`.
-`new` is translated only in `.goop` sources; native `.go` callers use generated
-`NewBox[string](...)` or arity-suffixed constructor names for overloaded classes.
+`new` is translated only in `.goop` sources.
+
+#### Same-arity overloading (resolved by type)
+
+Overloads may share the same arity and differ only by parameter type; the typed
+IR infers each argument's type and selects the most specific match at compile
+time (there is no runtime dispatch):
+
+```go
+public class Printer {
+    constructor() {}
+    public Show(v int) string { return fmt.Sprintf("int:%d", v) }
+    public Show(v string) string { return "str:" + v }
+    public Show(v bool) string { return fmt.Sprintf("bool:%t", v) }
+}
+
+public class Point {
+    private label string
+    constructor(x int) { this.label = fmt.Sprintf("n%d", x) }  // ctor overload
+    constructor(s string) { this.label = "s" + s }             // same arity, by type
+    Label() string { return this.label }
+}
+
+func main() {
+    p := new Printer()
+    fmt.Println(p.Show(42))    // int:42
+    fmt.Println(p.Show("hi"))  // str:hi
+    fmt.Println(p.Show(true))  // bool:true
+    fmt.Println(new Point(7).Label())    // n7
+    fmt.Println(new Point("x").Label())  // sx
+}
+```
+
+A call that matches no overload, matches several equally well, or whose argument
+type cannot be inferred is rejected during GoOOP semantic analysis (e.g.
+`ambiguous overloaded call to Show ...`), not by a later Go compiler error.
 
 The complete runnable package-wide example is in
 [`examples/advanced/`](examples/advanced/). From the repository root:
@@ -341,7 +375,7 @@ GoOOP today, grouped by how hard each is given that GoOOP rewrites to Go.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Same-arity overloading by type | ❌ | Needs type inference on arguments. |
+| Same-arity overloading by type | ✅ supported | Resolved at compile time by the typed IR (argument type inference + specificity). Within a package/inheritance chain; cross-**package** overload resolution and overloaded virtual/interface methods remain future work. |
 | Class-level visibility (public/private/protected) | ✅ supported | Java top-level rules enforced; private nested classes access-checked and emitted unexported. |
 | Full member `private` / `protected` enforcement | ⚠️ partial | Diagnostics exist; full enforcement across arbitrary Go expressions needs a resolver. |
 | Constructor-time virtual dispatch | ❌ | Java's partially-initialized subclass semantics. |
@@ -388,18 +422,26 @@ resolution → semantic analysis → Go code generation → gofmt
   `NewX`/`newX`, `GoOOPMetadataX`, receivers, embeddings and every resolved
   reference — share one visibility, so a package-private implementation never
   leaks through an exported symbol.
+- **Overload resolution** (`internal/compiler/overload.go`): overloaded methods
+  and constructors are matched at compile time. Argument expressions are type-
+  inferred over a scope (parameters, locals, fields, `this`, `new`, method
+  returns); each candidate is scored by assignability and specificity; the
+  winner's distinct signature-mangled name is written at the call site. No
+  runtime `...any` dispatcher is emitted.
 
-This is being delivered incrementally; the first milestone resolves
-package-private classes end-to-end (see `resolve_test.go` and the
-`TestPackagePrivateClassFullyUnexportedViaTypedIR` integration test). The
-remaining string-based lowering of `new`/`this`/`super`/static access is being
-migrated onto the same resolver in subsequent milestones.
+Delivered incrementally; milestones so far resolve package-private classes
+end-to-end and perform static same-arity overload resolution (see
+`resolve_test.go`, `overload_test.go`, and the integration tests
+`TestPackagePrivateClassFullyUnexportedViaTypedIR` and
+`TestSameArityMethodOverloadByType`). The remaining string-based lowering of
+`new`/`this`/`super`/static access is being migrated onto the same resolver in
+subsequent milestones.
 
 ## Roadmap
 
 1. ✅ Typed IR foundation: symbol table + AST-based type/identifier resolution.
 2. ✅ True package-private unexported emission through resolved references.
-3. Same-arity method/constructor overloading via type resolution.
+3. ✅ Same-arity method/constructor overloading via static type resolution.
 4. Covariant return types and full inherited-member/override resolution.
 5. Full source-level visibility checks and constructor dispatch semantics.
 6. Operator expression lowering and opt-in executable annotation processors.
