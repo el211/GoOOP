@@ -112,6 +112,7 @@ func CompileFiles(sources map[string][]byte) (map[string][]byte, error) {
 			units[filename] = u
 			combined.classes = append(combined.classes, u.classes...)
 			combined.interfaces = append(combined.interfaces, u.interfaces...)
+			combined.functions = append(combined.functions, u.functions...)
 			for _, c := range u.classes {
 				classMap[c.name] = c
 			}
@@ -945,6 +946,73 @@ func validate(u *unit) error {
 				return fmt.Errorf("%s.%s: super(...) only allowed in a constructor", c.name, m.name)
 			}
 
+		}
+	}
+	if err := checkVisibilityAccess(u, classes); err != nil {
+		return err
+	}
+	return nil
+}
+
+// topLevelOf returns the outermost class enclosing c (c itself if top-level).
+func topLevelOf(c *class) string {
+	if c.enclosing != "" {
+		return c.enclosing
+	}
+	return c.name
+}
+
+// classAccessible applies Java access rules within one package: a private class
+// is reachable only from within its enclosing top-level class; everything else
+// is reachable package-wide.
+func classAccessible(ref *class, fromTopLevel string) bool {
+	if ref.visibility != "private" {
+		return true
+	}
+	return fromTopLevel != "" && ref.enclosing == fromTopLevel
+}
+
+// scanClassRefs reports a disallowed access to a private class if `src` contains
+// a dotted reference `A.B` whose flattened class `A_B` is not accessible.
+func scanClassRefs(src string, classes map[string]*class, fromTopLevel, where string) error {
+	ts := lex(src)
+	for i := 0; i+2 < len(ts); i++ {
+		if ts[i+1].value != "." || !isIdentStart(ts[i].value[0]) || !isIdentStart(ts[i+2].value[0]) {
+			continue
+		}
+		if ref := classes[ts[i].value+"_"+ts[i+2].value]; ref != nil && !classAccessible(ref, fromTopLevel) {
+			return fmt.Errorf("%s: cannot access %s class %s.%s", where, ref.visibility, ts[i].value, ts[i+2].value)
+		}
+	}
+	return nil
+}
+
+func checkVisibilityAccess(u *unit, classes map[string]*class) error {
+	for _, c := range u.classes {
+		top := topLevelOf(c)
+		for _, ref := range allParents(c) {
+			if p := classes[ref.name]; p != nil && !classAccessible(p, top) {
+				return fmt.Errorf("%s: cannot extend %s class %s", c.name, p.visibility, ref.name)
+			}
+		}
+		for _, f := range c.fields {
+			for _, s := range []string{f.typ, f.initializer} {
+				if err := scanClassRefs(s, classes, top, c.name); err != nil {
+					return err
+				}
+			}
+		}
+		for _, m := range c.methods {
+			for _, s := range []string{m.params, m.returns, m.body} {
+				if err := scanClassRefs(s, classes, top, c.name+"."+m.name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, fn := range u.functions {
+		if err := scanClassRefs(fn, classes, "", "function"); err != nil {
+			return err
 		}
 	}
 	return nil

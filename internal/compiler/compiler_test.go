@@ -135,6 +135,45 @@ func main() { _ = new Child(); _ = Child_Kind() }`
 		}
 	}
 }
+func TestPrivateNestedClassAccessibleWithinEnclosing(t *testing.T) {
+	src := `package main
+class Outer {
+    private class Secret { Value() int { return 42 } }
+    Use() int { return new Outer.Secret().Value() }
+}
+func main() { _ = new Outer().Use() }`
+	if _, err := Compile("ok.goop", []byte(src)); err != nil {
+		t.Fatalf("private nested should be usable inside its enclosing class: %v", err)
+	}
+}
+func TestPrivateNestedClassRejectedFromOutside(t *testing.T) {
+	src := `package main
+class Outer { private class Secret { Value() int { return 42 } } }
+class Other { Use() int { return new Outer.Secret().Value() } }
+func main() { _ = new Other().Use() }`
+	_, err := Compile("bad.goop", []byte(src))
+	if err == nil || !strings.Contains(err.Error(), "cannot access private class Outer.Secret") {
+		t.Fatalf("expected private-nested access rejection, got: %v", err)
+	}
+}
+func TestPrivateNestedClassRejectedFromFunction(t *testing.T) {
+	src := `package main
+class Outer { private class Secret { Value() int { return 42 } } }
+func main() { _ = new Outer.Secret().Value() }`
+	_, err := Compile("fn.goop", []byte(src))
+	if err == nil || !strings.Contains(err.Error(), "cannot access private class") {
+		t.Fatalf("expected private-nested access rejection from function, got: %v", err)
+	}
+}
+func TestProtectedNestedClassAccessibleInPackage(t *testing.T) {
+	src := `package main
+class Outer { protected class Shared { Value() int { return 1 } } }
+class Other { Use() int { return new Outer.Shared().Value() } }
+func main() { _ = new Other().Use() }`
+	if _, err := Compile("prot.goop", []byte(src)); err != nil {
+		t.Fatalf("protected nested should be package-accessible: %v", err)
+	}
+}
 func TestTopLevelClassCannotBePrivateOrProtected(t *testing.T) {
 	for _, vis := range []string{"private", "protected"} {
 		src := "package main\n" + vis + " class Thing { Get() int { return 1 } }\nfunc main() { _ = new Thing().Get() }"
