@@ -239,7 +239,8 @@ method bodies, plus the explicit GoOOP constructs documented below.
 | `final` / sealed | Supported: `final class X` cannot be extended; a `final` method cannot be overridden; both are rejected at compile time. `final` cannot combine with `abstract`/`static` or constructors. |
 | Nested classes | Supported: a `class Inner { ... }` declared inside `Outer` is flattened to a top-level `Outer_Inner` type. Reference it as `Outer.Inner` (e.g. `new Outer.Inner(...)`), which lowers to `Outer_Inner`. These are *static* nested classes — no implicit reference to an outer instance. |
 | Annotations / metadata | `@Name` and `@Name(...)` accepted on class, interface, field and method declarations; class/annotated-member metadata is available through `GoOOPMetadataClassName`. Annotations are metadata, **not executable decorators**. |
-| Visibility | `private`, `protected`, `public` parsed; inherited private access via `this` and direct named `super` access receives diagnostics. Public field/method symbols use Go capitalization. Full Java access enforcement is not guaranteed across arbitrary Go expressions or native `.go` sources. |
+| Visibility (members) | `private`, `protected`, `public` parsed; inherited private access via `this` and direct named `super` access receives diagnostics. Public field/method symbols use Go capitalization. Full Java access enforcement is not guaranteed across arbitrary Go expressions or native `.go` sources. |
+| Visibility (classes) | Follows Java's class rules. **Top-level** classes may only be `public` or package-private (default); `private`/`protected` top-level classes are rejected. **Nested** classes accept all four. A `private` nested class is accessible only within its enclosing top-level class (compiler-enforced) and is emitted as an **unexported** Go type (`outer_Inner`, unexported constructor and metadata) so it cannot leak through the generated public API. `protected`/package-private are package-accessible. Limitation: a `private` class cannot currently be used as a superclass; package-private classes are still exported in Go (enforced within the package by the compiler, not across Go packages). |
 | Cross-file inheritance | All `.goop` declarations **within a Go package directory** are resolved together. Imported cross-package classes use normal Go package APIs, not implicit `extends` across packages. |
 | Polymorphism | Existing `virtual` / `override` generated self-dispatch; **constructor-time dispatch does not emulate Java's partially initialized subclass semantics**. |
 | Native integration | Standard Go module, imports, structs and libraries; ephemeral `go -overlay` in `goop build`, `run`, `test`, `check`. |
@@ -341,7 +342,8 @@ GoOOP today, grouped by how hard each is given that GoOOP rewrites to Go.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Same-arity overloading by type | ❌ | Needs type inference on arguments. |
-| Full `private` / `protected` enforcement | ⚠️ partial | Diagnostics exist; full enforcement needs a resolver. |
+| Class-level visibility (public/private/protected) | ✅ supported | Java top-level rules enforced; private nested classes access-checked and emitted unexported. |
+| Full member `private` / `protected` enforcement | ⚠️ partial | Diagnostics exist; full enforcement across arbitrary Go expressions needs a resolver. |
 | Constructor-time virtual dispatch | ❌ | Java's partially-initialized subclass semantics. |
 | Covariant return types | ❌ | Override currently compares exact result types. |
 | Overloaded virtual / interface methods | ❌ | Requires typed dispatch tables. |
