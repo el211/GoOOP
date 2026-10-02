@@ -240,7 +240,7 @@ method bodies, plus the explicit GoOOP constructs documented below.
 | Nested classes | Supported: a `class Inner { ... }` declared inside `Outer` is flattened to a top-level `Outer_Inner` type. Reference it as `Outer.Inner` (e.g. `new Outer.Inner(...)`), which lowers to `Outer_Inner`. These are *static* nested classes — no implicit reference to an outer instance. |
 | Annotations / metadata | `@Name` and `@Name(...)` accepted on class, interface, field and method declarations; class/annotated-member metadata is available through `GoOOPMetadataClassName`. Annotations are metadata, **not executable decorators**. |
 | Visibility (members) | `private`, `protected`, `public` parsed; inherited private access via `this` and direct named `super` access receives diagnostics. Public field/method symbols use Go capitalization. Full Java access enforcement is not guaranteed across arbitrary Go expressions or native `.go` sources. |
-| Visibility (classes) | Follows Java's class rules. **Top-level** classes may only be `public` or package-private (default); `private`/`protected` top-level classes are rejected. **Nested** classes accept all four. A `private` nested class is accessible only within its enclosing top-level class (compiler-enforced) and is emitted as an **unexported** Go type (`outer_Inner`, unexported constructor) so it cannot leak through the generated public API; it may be used as a superclass **within** its enclosing class. `protected`/package-private are package-accessible. Limitations: package-private classes are still *exported* in Go (their privacy is enforced within the package by the compiler, not across Go packages) — making them unexported requires rewriting bare class-name type references (`var x Box`) and the `NewX`/`GoOOPMetadataX` API, which needs the typed-IR frontend on the roadmap. |
+| Visibility (classes) | Follows Java's class rules, enforced by the typed-IR frontend. **Top-level** classes may only be `public` or package-private (default); `private`/`protected` top-level classes are rejected. **Nested** classes accept all four. `public`/`protected` classes are emitted as **exported** Go types; **package-private (default) and `private` classes are emitted as unexported** Go types — their type name, `NewX` constructor, `GoOOPMetadataX` and every resolved reference (field types, parameters, return types, generic arguments, local-variable types) are rewritten consistently to the unexported form, so native Go in other packages cannot reach them. A `private` nested class is additionally restricted to its enclosing top-level class (compiler-enforced) and may be used as a superclass there. To expose a class (and its `NewX`/metadata) to native Go in another package, mark it `public`. |
 | Cross-file inheritance | All `.goop` declarations **within a Go package directory** are resolved together. Imported cross-package classes use normal Go package APIs, not implicit `extends` across packages. |
 | Polymorphism | Existing `virtual` / `override` generated self-dispatch; **constructor-time dispatch does not emulate Java's partially initialized subclass semantics**. |
 | Native integration | Standard Go module, imports, structs and libraries; ephemeral `go -overlay` in `goop build`, `run`, `test`, `check`. |
@@ -363,13 +363,47 @@ idiomatic Go, not a Java clone. Category A is a normal backlog; category B is
 gated on the typed IR below; category C fights Go's design and is out of scope
 unless it can lower cleanly.
 
+## Compiler architecture (typed IR)
+
+GoOOP is moving from string rewriting to a resolution-driven pipeline:
+
+```
+.goop source → lexer → parser (AST) → symbol table → type/identifier
+resolution → semantic analysis → Go code generation → gofmt
+```
+
+- **Symbol table** (`internal/compiler/symbols.go`): one table per package holding
+  every class, interface and enum with its source location, visibility and the
+  Go identifier it is emitted as (`GoName`). Package-private and `private`
+  classes get unexported Go names; `public`/`protected` stay exported.
+- **Type & identifier resolution** (`internal/compiler/resolve.go`): type
+  references are parsed with `go/parser` and rewritten on the **AST** — never by
+  regular-expression name replacement. The resolver handles pointers, slices,
+  maps, channels, generic instantiations and qualified nested classes
+  (`Outer.Inner`), and is applied to field types, parameters, return types,
+  constructor signatures, generic arguments and in-body type positions
+  (`var x T`, composite literals, type assertions) plus the generated
+  `GoOOPMetadataX` references.
+- **Consistency guarantee:** a class and all of its generated symbols — the type,
+  `NewX`/`newX`, `GoOOPMetadataX`, receivers, embeddings and every resolved
+  reference — share one visibility, so a package-private implementation never
+  leaks through an exported symbol.
+
+This is being delivered incrementally; the first milestone resolves
+package-private classes end-to-end (see `resolve_test.go` and the
+`TestPackagePrivateClassFullyUnexportedViaTypedIR` integration test). The
+remaining string-based lowering of `new`/`this`/`super`/static access is being
+migrated onto the same resolver in subsequent milestones.
+
 ## Roadmap
 
-1. Typed expression IR and static (including same-arity) overload resolution.
-2. Full source-level visibility checks and constructor dispatch semantics.
-3. Operator expression lowering and opt-in executable annotation processors.
-4. Language-server diagnostics, source maps and incremental package graph.
-5. Optional integration with Go Spring Boot and GoModulith.
+1. ✅ Typed IR foundation: symbol table + AST-based type/identifier resolution.
+2. ✅ True package-private unexported emission through resolved references.
+3. Same-arity method/constructor overloading via type resolution.
+4. Covariant return types and full inherited-member/override resolution.
+5. Full source-level visibility checks and constructor dispatch semantics.
+6. Operator expression lowering and opt-in executable annotation processors.
+7. Language-server diagnostics, source maps and incremental package graph.
 
 ## Development
 
@@ -379,6 +413,6 @@ go build -o ./goop ./cmd/goop
 (cd examples/animals && ../../goop run && ../../goop test && ../../goop check && ../../goop build)
 ```
 
-Architecture: `cmd/goop` provides the CLI, while `internal/compiler` handles byte-offset-preserving lexing, `.goop` parsing, class validation, rewriting and formatted Go emission. Contributions and small reproducible examples are welcome.
+Architecture: `cmd/goop` provides the CLI, while `internal/compiler` handles byte-offset-preserving lexing, `.goop` parsing, class validation, a package **symbol table** and **AST-based type resolution** (see [Compiler architecture](#compiler-architecture-typed-ir)), and formatted Go emission. Contributions and small reproducible examples are welcome.
 
 **Implementation note:** GoOOP uses the standard Go build overlay (not a copied project tree), preserving relative module references, mixed native Go packages and build assets. External tools that do not accept `go -overlay` will not see virtual generated Go until you explicitly run `goop generate`.
