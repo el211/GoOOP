@@ -41,6 +41,158 @@ func main(){
 	}
 }
 
+func runGoop(t *testing.T, src, mod string) string {
+	t.Helper()
+	out, err := Compile("ov.goop", []byte(src))
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/"+mod+"\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ov_goop.go"), out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s\n--- generated ---\n%s", err, result, out)
+	}
+	return string(result)
+}
+
+func TestSameArityMethodOverloadByType(t *testing.T) {
+	src := `package main
+import "fmt"
+public class Printer {
+    constructor() {}
+    public Show(v int) string { return fmt.Sprintf("int:%d", v) }
+    public Show(v string) string { return "str:" + v }
+    public Show(v bool) string { return fmt.Sprintf("bool:%t", v) }
+}
+func main() {
+    p := new Printer()
+    fmt.Println(p.Show(42))
+    fmt.Println(p.Show("hi"))
+    fmt.Println(p.Show(true))
+}`
+	if got := runGoop(t, src, "samemeth"); got != "int:42\nstr:hi\nbool:true\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSameArityConstructorOverloadByType(t *testing.T) {
+	src := `package main
+import "fmt"
+public class Point {
+    private label string
+    constructor(x int) { this.label = fmt.Sprintf("n%d", x) }
+    constructor(s string) { this.label = "s" + s }
+    Label() string { return this.label }
+}
+func main() {
+    fmt.Println(new Point(7).Label())
+    fmt.Println(new Point("x").Label())
+}`
+	if got := runGoop(t, src, "samector"); got != "n7\nsx\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestOverloadByUserTypeAndNil(t *testing.T) {
+	src := `package main
+import "fmt"
+public class Box {
+    constructor() {}
+    Hold(d *Box) string { return "box" }
+    Hold(n int) string { return fmt.Sprintf("n%d", n) }
+}
+func main() {
+    b := new Box()
+    fmt.Println(b.Hold(b))
+    fmt.Println(b.Hold(5))
+}`
+	if got := runGoop(t, src, "usertype"); got != "box\nn5\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestOverloadDifferentReturnTypes(t *testing.T) {
+	src := `package main
+import "fmt"
+public class Conv {
+    constructor() {}
+    To(v int) int { return v + 1 }
+    To(v string) string { return v + "!" }
+}
+func main() {
+    c := new Conv()
+    fmt.Println(c.To(1))
+    fmt.Println(c.To("a"))
+}`
+	if got := runGoop(t, src, "rettypes"); got != "2\na!\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAmbiguousOverloadDiagnostic(t *testing.T) {
+	src := `package main
+public class A { constructor() {} }
+public class B { constructor() {} }
+public class C {
+    constructor() {}
+    Take(a *A) int { return 1 }
+    Take(b *B) int { return 2 }
+    Use() int { return this.Take(nil) }
+}
+func main() { _ = new C().Use() }`
+	_, err := Compile("ambig.goop", []byte(src))
+	if err == nil || !contains(err.Error(), "ambiguous overloaded call to Take") {
+		t.Fatalf("expected ambiguity diagnostic, got: %v", err)
+	}
+}
+
+func TestNoMatchingOverloadDiagnostic(t *testing.T) {
+	src := `package main
+public class P {
+    constructor() {}
+    Go(v int) int { return v }
+    Go(v string) int { return 0 }
+    Use() int { return this.Go(true) }
+}
+func main() { _ = new P().Use() }`
+	_, err := Compile("nomatch.goop", []byte(src))
+	if err == nil || !contains(err.Error(), "no matching overload of Go") {
+		t.Fatalf("expected no-match diagnostic, got: %v", err)
+	}
+}
+
+func TestDuplicateOverloadSignatureRejected(t *testing.T) {
+	src := `package main
+public class D {
+    constructor() {}
+    Same(v int) int { return v }
+    Same(v int) int { return v + 1 }
+}
+func main() { _ = new D() }`
+	_, err := Compile("dup.goop", []byte(src))
+	if err == nil || !contains(err.Error(), "duplicate overload signature") {
+		t.Fatalf("expected duplicate-signature diagnostic, got: %v", err)
+	}
+}
+
+func contains(s, sub string) bool { return len(s) >= len(sub) && indexOf(s, sub) >= 0 }
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestMethodOverloadsDistinctArity(t *testing.T) {
 	src := `package main
 import "fmt"

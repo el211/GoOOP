@@ -29,6 +29,14 @@ func (s *SymbolTable) Lookup(name string) (*Symbol, bool) {
 	return sym, ok
 }
 
+// classFor returns the class declared under a GoOOP name, or nil.
+func (s *SymbolTable) classFor(name string) *class {
+	if sym, ok := s.byName[name]; ok {
+		return sym.Class
+	}
+	return nil
+}
+
 // buildSymbols constructs the package symbol table from the resolved class map
 // plus the interface and enum declarations. A class's GoName encodes its
 // visibility, so every consumer that resolves a type reference through the table

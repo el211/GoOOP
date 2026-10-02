@@ -189,45 +189,62 @@ func resolveNode(n ast.Node, syms *SymbolTable) {
 	})
 }
 
-// resolveStmts resolves type references and metadata identifiers in a statement
-// list (a method or constructor body). Parse failures leave the body untouched.
-func resolveStmts(body string, syms *SymbolTable) string {
+// resolveStmts resolves overloaded calls, type references and metadata
+// identifiers in a statement list (a method or constructor body). Overload
+// diagnostics are returned as errors; parse failures leave the body untouched.
+func resolveStmts(body string, ctx *inferCtx) (string, error) {
 	fset := gotoken.NewFileSet()
 	file, err := goparser.ParseFile(fset, "body.go", "package p\nfunc _() {\n"+body+"\n}\n", goparser.ParseComments)
 	if err != nil {
-		return body
+		return body, nil
 	}
-	resolveNode(file, syms)
+	if err := ctx.resolveOverloadCalls(file); err != nil {
+		return "", err
+	}
+	resolveNode(file, ctx.syms)
 	var out strings.Builder
 	if err := format.Node(&out, fset, file); err != nil {
-		return body
+		return body, nil
 	}
 	s := out.String()
 	open := strings.Index(s, "{")
 	closeAt := strings.LastIndex(s, "}")
 	if open < 0 || closeAt <= open {
-		return body
+		return body, nil
 	}
-	return strings.TrimSpace(s[open+1 : closeAt])
+	return strings.TrimSpace(s[open+1 : closeAt]), nil
 }
 
 // resolveFunc resolves a complete top-level function declaration.
-func resolveFunc(fn string, syms *SymbolTable) string {
+func resolveFunc(fn string, ctx *inferCtx) (string, error) {
 	fset := gotoken.NewFileSet()
 	file, err := goparser.ParseFile(fset, "fn.go", "package p\n"+fn+"\n", goparser.ParseComments)
 	if err != nil {
-		return fn
+		return fn, nil
 	}
-	resolveNode(file, syms)
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Type.Params != nil {
+			for _, f := range fd.Type.Params.List {
+				typ := printType(f.Type)
+				for _, n := range f.Names {
+					ctx.scope[n.Name] = typ
+				}
+			}
+		}
+	}
+	if err := ctx.resolveOverloadCalls(file); err != nil {
+		return "", err
+	}
+	resolveNode(file, ctx.syms)
 	var out strings.Builder
 	if err := format.Node(&out, fset, file); err != nil {
-		return fn
+		return fn, nil
 	}
 	s := out.String()
 	if idx := strings.Index(s, "func "); idx >= 0 {
-		return strings.TrimSpace(s[idx:])
+		return strings.TrimSpace(s[idx:]), nil
 	}
-	return fn
+	return fn, nil
 }
 
 func printResults(fl *ast.FieldList) string {

@@ -744,20 +744,20 @@ func validate(u *unit) error {
 			return fmt.Errorf("duplicate class %s", c.name)
 		}
 		classes[c.name] = c
-		constructorArities := map[int]bool{}
+		constructorSigs := map[string]bool{}
 		methodsByName := map[string][]method{}
 		for _, m := range c.methods {
 			if !m.ctor {
 				methodsByName[m.name] = append(methodsByName[m.name], m)
 			} else {
-				arity, err := paramCount(m.params)
+				sig, err := overloadSuffix(m.params)
 				if err != nil {
 					return fmt.Errorf("%s constructor: %w", c.name, err)
 				}
-				if constructorArities[arity] {
-					return fmt.Errorf("%s: constructor overloads require different argument counts (%d repeated)", c.name, arity)
+				if constructorSigs[sig] {
+					return fmt.Errorf("%s: duplicate constructor signature (%s)", c.name, strings.TrimSpace(m.params))
 				}
-				constructorArities[arity] = true
+				constructorSigs[sig] = true
 				if !m.hasBody {
 					return fmt.Errorf("%s: constructor needs a body", c.name)
 				}
@@ -776,22 +776,23 @@ func validate(u *unit) error {
 			if len(group) < 2 {
 				continue
 			}
-			arities := map[int]bool{}
+			sigs := map[string]bool{}
 			for _, member := range group {
+				// Overloads are resolved statically, so they may differ by
+				// parameter type and even return type, but must be concrete,
+				// nonvirtual instance methods (virtual/interface overloads need
+				// the dispatch work of a later milestone).
 				if member.mods["abstract"] || member.mods["virtual"] || member.mods["override"] || member.mods["static"] {
 					return fmt.Errorf("%s.%s: overloaded methods must be concrete, nonvirtual instance methods", c.name, name)
 				}
-				arity, err := paramCount(member.params)
+				sig, err := overloadSuffix(member.params)
 				if err != nil {
 					return err
 				}
-				if arities[arity] {
-					return fmt.Errorf("%s.%s: overloads require distinct argument counts (duplicate %d)", c.name, name, arity)
+				if sigs[sig] {
+					return fmt.Errorf("%s.%s: duplicate overload signature (%s)", c.name, name, strings.TrimSpace(member.params))
 				}
-				arities[arity] = true
-				if signatureReturns(group[0]) != signatureReturns(member) {
-					return fmt.Errorf("%s.%s: overloaded methods must share one return type", c.name, name)
-				}
+				sigs[sig] = true
 			}
 		}
 	}
@@ -1069,8 +1070,6 @@ func substituteNames(source string, substitutions map[string]string) string {
 	return out.String()
 }
 
-func signatureReturns(m method) string { return strings.Join(strings.Fields(m.returns), "") }
-
 func signature(m method) string {
 	source := "package p\ntype X interface { M(" + m.params + ") " + m.returns + " }"
 	f, err := goparser.ParseFile(gotoken.NewFileSet(), "signature.go", source, 0)
@@ -1183,29 +1182,6 @@ func constructors(c *class) []method {
 	}
 	return out
 }
-func constructorNameFor(c *class, n int) (string, error) {
-	ctors := constructors(c)
-	if len(ctors) == 1 {
-		arity, err := paramCount(ctors[0].params)
-		if err != nil {
-			return "", err
-		}
-		if arity != n {
-			return "", fmt.Errorf("%s: no constructor accepting %d argument(s)", c.name, n)
-		}
-		return ctorName(c), nil
-	}
-	for _, ctor := range ctors {
-		arity, err := paramCount(ctor.params)
-		if err != nil {
-			return "", err
-		}
-		if arity == n {
-			return ctorName(c) + "__" + fmt.Sprint(n), nil
-		}
-	}
-	return "", fmt.Errorf("%s: no constructor accepting %d argument(s)", c.name, n)
-}
 
 // invocationCount counts top-level call arguments, skipping nested (), [] and {}.
 func invocationCount(ts []token, open int) (int, int, error) {
@@ -1245,23 +1221,6 @@ func invocationCount(ts []token, open int) (int, int, error) {
 		}
 	}
 	return 0, 0, fmt.Errorf("unterminated invocation")
-}
-func genericCallOpen(ts []token, pos int) int {
-	if pos < len(ts) && ts[pos].value == "[" {
-		depth := 1
-		for i := pos + 1; i < len(ts); i++ {
-			if ts[i].value == "[" {
-				depth++
-			}
-			if ts[i].value == "]" {
-				depth--
-				if depth == 0 {
-					return i + 1
-				}
-			}
-		}
-	}
-	return pos
 }
 
 // leadingSupers moves explicit parent constructors before field initialization.
@@ -1504,13 +1463,9 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 		for _, ctor := range constructors(c) {
 			params := ctor.params
 			body := ctor.body
-			arity, err := paramCount(params)
-			if err != nil {
-				return "", err
-			}
-			ctorFunc, err := constructorNameFor(c, arity)
-			if err != nil {
-				return "", err
+			ctorFunc := ctorName(c)
+			if len(constructors(c)) > 1 {
+				ctorFunc = ctorOverloadName(c, ctor)
 			}
 			resolvedParams, _ := resolveSignature(params, "", syms)
 			fmt.Fprintf(&b, "func %s%s(%s) *%s%s {\nself := &%s%s{}\n", ctorFunc, declaredParams(c.typeParams), resolvedParams, gn, usedParams(c.typeArgs), gn, usedParams(c.typeArgs))
@@ -1518,6 +1473,9 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("%s constructor: %w", c.name, err)
 			}
+			// Build the whole constructor body, then resolve overloaded calls,
+			// type references and metadata once over the complete statement list.
+			var cbody strings.Builder
 			for _, ref := range allParents(c) {
 				call, explicit := calls[ref.name]
 				if explicit {
@@ -1525,17 +1483,16 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 					if err != nil {
 						return "", fmt.Errorf("%s constructor: %w", c.name, err)
 					}
-					b.WriteString(converted)
-					b.WriteString("\n")
+					cbody.WriteString(converted)
+					cbody.WriteString("\n")
 				} else {
-					parentCtor, err := constructorNameFor(classes[ref.name], 0)
+					parentCtor, err := zeroCtorEmitName(classes[ref.name])
 					if err != nil {
 						return "", fmt.Errorf("%s constructor: explicitly initialize %s because %w", c.name, ref.name, err)
 					}
-					fmt.Fprintf(&b, "self.%s = *%s%s()\n", goFieldName(classes, ref.name), parentCtor, ref.args)
+					fmt.Fprintf(&cbody, "self.%s = *%s%s()\n", goFieldName(classes, ref.name), parentCtor, ref.args)
 				}
 			}
-			body = rest
 			for _, f := range c.fields {
 				if f.initializer == "" || f.mods["static"] {
 					continue // static fields initialize once, at package level
@@ -1548,13 +1505,18 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				if f.mods["public"] && !f.mods["property"] {
 					fieldName = exported(fieldName)
 				}
-				fmt.Fprintf(&b, "self.%s = %s\n", fieldName, converted)
+				fmt.Fprintf(&cbody, "self.%s = %s\n", fieldName, converted)
 			}
-			converted, err := rewrite(body, c, classes, enums, true)
+			restConverted, err := rewrite(rest, c, classes, enums, true)
 			if err != nil {
 				return "", fmt.Errorf("%s constructor: %w", c.name, err)
 			}
-			b.WriteString(resolveStmts(converted, syms))
+			cbody.WriteString(restConverted)
+			resolvedBody, rerr := resolveStmts(cbody.String(), newInferCtx(syms, c, ctor.params))
+			if rerr != nil {
+				return "", fmt.Errorf("%s constructor: %w", c.name, rerr)
+			}
+			b.WriteString(resolvedBody)
 			b.WriteString("\nself.__goopBind(self)\nreturn self\n}\n\n")
 		}
 		methodGroups := map[string][]method{}
@@ -1573,11 +1535,9 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			}
 			emittedName := name
 			if len(methodGroups[m.name]) > 1 {
-				arity, err := paramCount(m.params)
-				if err != nil {
-					return "", err
-				}
-				emittedName = fmt.Sprintf("__goopOverload_%s_%d", name, arity)
+				// Overloaded: emit a distinct, signature-mangled Go name. Call
+				// sites are resolved to this name by the typed-IR overload pass.
+				emittedName = overloadMethodName(m)
 			}
 			mp, mr := resolveSignature(m.params, m.returns, syms)
 			if m.mods["static"] {
@@ -1590,51 +1550,18 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				if err != nil {
 					return "", fmt.Errorf("%s.%s: %w", c.name, m.name, err)
 				}
-				b.WriteString(resolveStmts(converted, syms))
+				resolvedBody, rerr := resolveStmts(converted, newInferCtx(syms, c, m.params))
+				if rerr != nil {
+					return "", fmt.Errorf("%s.%s: %w", c.name, m.name, rerr)
+				}
+				b.WriteString(resolvedBody)
 			} else {
 				fmt.Fprintf(&b, "panic(%q)\n", "abstract method "+c.name+"."+m.name)
 			}
 			b.WriteString("\n}\n\n")
 		}
-		emittedOverloads := map[string]bool{}
-		for _, m := range c.methods {
-			group := methodGroups[m.name]
-			if m.ctor || len(group) < 2 || emittedOverloads[m.name] {
-				continue
-			}
-			emittedOverloads[m.name] = true
-			name := m.name
-			if m.mods["public"] {
-				name = exported(name)
-			}
-			_, dispatchRet := resolveSignature("", m.returns, syms)
-			fmt.Fprintf(&b, "func (self *%s%s) %s(args ...any) %s {\n", gn, usedParams(c.typeArgs), name, dispatchRet)
-			b.WriteString("switch len(args) {\n")
-			for _, member := range group {
-				arity, _ := paramCount(member.params)
-				params, err := parameterDetails(member.params)
-				if err != nil {
-					return "", err
-				}
-				fmt.Fprintf(&b, "case %d:\n", arity)
-				for i, param := range params {
-					param = resolveTypeExpr(param, syms)
-					fmt.Fprintf(&b, "arg%d, ok%d := args[%d].(%s)\n", i, i, i, param)
-					fmt.Fprintf(&b, "if !ok%d {panic(%q)}\n", i, fmt.Sprintf("%s.%s: incompatible argument %d (expected %s)", c.name, name, i+1, param))
-				}
-				args := make([]string, len(params))
-				for i := range params {
-					args[i] = fmt.Sprintf("arg%d", i)
-				}
-				call := fmt.Sprintf("self.__goopOverload_%s_%d(%s)", name, arity, strings.Join(args, ","))
-				if strings.TrimSpace(m.returns) == "" {
-					fmt.Fprintf(&b, "%s\nreturn\n", call)
-				} else {
-					fmt.Fprintf(&b, "return %s\n", call)
-				}
-			}
-			fmt.Fprintf(&b, "default: panic(%q)\n}\n}\n", c.name+"."+name+": no overload for argument count")
-		}
+		// Overloaded methods are resolved statically at their call sites by the
+		// typed-IR overload pass; no runtime dispatcher is emitted.
 		for _, f := range c.fields {
 			if !f.mods["property"] {
 				continue
@@ -1676,7 +1603,11 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		b.WriteString(resolveFunc(converted, syms))
+		resolvedFn, rerr := resolveFunc(converted, newInferCtx(syms, nil, ""))
+		if rerr != nil {
+			return "", rerr
+		}
+		b.WriteString(resolvedFn)
 		b.WriteString("\n\n")
 	}
 	return b.String(), nil
@@ -1756,49 +1687,21 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 				if target.abstract {
 					return "", fmt.Errorf("cannot instantiate abstract class %s", mangled)
 				}
-				ctorName := "New" + mangled
-				if unexportedClass(target) {
-					ctorName = "new" + mangled
-				}
-				open := genericCallOpen(ts, i+4)
-				if open < len(ts) && ts[open].value == "(" {
-					arity, _, err := invocationCount(ts, open)
-					if err != nil {
-						return "", err
-					}
-					ctorName, err = constructorNameFor(target, arity)
-					if err != nil {
-						return "", err
-					}
-				}
-				edits = append(edits, replacement{t.start, ts[i+3].end, ctorName})
+				edits = append(edits, replacement{t.start, ts[i+3].end, ctorName(target)})
 				i += 3
 				continue
 			}
 		}
 		if t.value == "new" && i+2 < len(ts) && isIdentStart(ts[i+1].value[0]) && (ts[i+2].value == "(" || ts[i+2].value == "[") {
 			name := ts[i+1].value
-			if target := classes[name]; target != nil && target.abstract {
-				return "", fmt.Errorf("cannot instantiate abstract class %s", name)
-			}
-			ctorName := "New" + name
-			if target := classes[name]; target != nil && unexportedClass(target) {
-				ctorName = "new" + name
-			}
-			open := genericCallOpen(ts, i+2)
-			if open < len(ts) && ts[open].value == "(" {
-				arity, _, err := invocationCount(ts, open)
-				if err != nil {
-					return "", err
+			base := "New" + name
+			if target := classes[name]; target != nil {
+				if target.abstract {
+					return "", fmt.Errorf("cannot instantiate abstract class %s", name)
 				}
-				if target := classes[name]; target != nil {
-					ctorName, err = constructorNameFor(target, arity)
-					if err != nil {
-						return "", err
-					}
-				}
+				base = ctorName(target)
 			}
-			edits = append(edits, replacement{t.start, ts[i+1].end, ctorName})
+			edits = append(edits, replacement{t.start, ts[i+1].end, base})
 			i++
 			continue
 		}
@@ -1812,14 +1715,7 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 				if actual == nil {
 					return "", fmt.Errorf("unknown superclass %s", chosenParent)
 				}
-				arity, _, err := invocationCount(ts, i+3)
-				if err != nil {
-					return "", err
-				}
-				chosen, err := constructorNameFor(actual, arity)
-				if err != nil {
-					return "", err
-				}
+				chosen := ctorName(actual) // overload suffix resolved by the typed-IR pass
 				refArgs := ""
 				for _, ref := range allParents(c) {
 					if ref.name == chosenParent {
@@ -1841,14 +1737,7 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 				if parent == nil {
 					return "", fmt.Errorf("unknown superclass %s", c.parent)
 				}
-				arity, _, err := invocationCount(ts, i+1)
-				if err != nil {
-					return "", err
-				}
-				chosen, err := constructorNameFor(parent, arity)
-				if err != nil {
-					return "", err
-				}
+				chosen := ctorName(parent) // overload suffix resolved by the typed-IR pass
 				edits = append(edits, replacement{t.start, t.end, "self." + goFieldName(classes, c.parent) + " = *" + chosen + c.parentArgs})
 				continue
 			}

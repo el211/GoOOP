@@ -242,3 +242,371 @@ func basicLitType(kind gotoken.Token) string {
 	}
 	return ""
 }
+
+// inferCtx carries the information needed to type-check argument expressions and
+// resolve overloaded calls inside one function/method body. It is the semantic
+// analysis context of the typed IR.
+type inferCtx struct {
+	syms  *SymbolTable
+	self  *class            // enclosing class, or nil for a free function
+	scope map[string]string // local identifier -> GoOOP type
+	ctors map[string]*class // emitted base constructor name -> class
+	err   error
+}
+
+func newInferCtx(syms *SymbolTable, self *class, params string) *inferCtx {
+	ctx := &inferCtx{syms: syms, self: self, scope: paramScope(params), ctors: map[string]*class{}}
+	for _, sym := range syms.byName {
+		if sym.Kind == "class" {
+			ctx.ctors[ctorName(sym.Class)] = sym.Class
+		}
+	}
+	return ctx
+}
+
+// paramScope maps parameter names to their declared types.
+func paramScope(params string) map[string]string {
+	scope := map[string]string{}
+	ft, err := goparser.ParseExpr("func(" + params + ") {}")
+	if err != nil {
+		return scope
+	}
+	fn, ok := ft.(*ast.FuncLit)
+	if !ok || fn.Type.Params == nil {
+		return scope
+	}
+	for _, f := range fn.Type.Params.List {
+		typ := printType(f.Type)
+		for _, n := range f.Names {
+			scope[n.Name] = typ
+		}
+	}
+	return scope
+}
+
+// classByType resolves a GoOOP type string to its class declaration, ignoring a
+// leading pointer and any generic argument list.
+func (ctx *inferCtx) classByType(t string) *class {
+	t = strings.TrimSpace(t)
+	t = strings.TrimPrefix(t, "*")
+	if i := strings.IndexByte(t, '['); i >= 0 {
+		t = t[:i]
+	}
+	if sym, ok := ctx.syms.Lookup(t); ok {
+		return sym.Class
+	}
+	return nil
+}
+
+// overloadGroup returns the own-class method set named `name` from the nearest
+// class (self first) that declares it. Overloads live in one class; an override
+// shadows the parent declaration rather than forming an overload with it, which
+// matches how the methods are emitted (grouped per class). An inherited,
+// genuinely-overloaded method is found on the ancestor that declares it, whose
+// mangled names are promoted through Go embedding.
+func (ctx *inferCtx) overloadGroup(c *class, name string) []method {
+	seen := map[string]bool{}
+	var walk func(*class) []method
+	walk = func(cl *class) []method {
+		if cl == nil || seen[cl.name] {
+			return nil
+		}
+		seen[cl.name] = true
+		var own []method
+		for _, m := range cl.methods {
+			if m.name == name && !m.ctor {
+				own = append(own, m)
+			}
+		}
+		if len(own) > 0 {
+			return own
+		}
+		for _, ref := range allParents(cl) {
+			if g := walk(ctx.syms.classFor(ref.name)); g != nil {
+				return g
+			}
+		}
+		return nil
+	}
+	return walk(c)
+}
+
+func (ctx *inferCtx) fieldType(c *class, name string) string {
+	seen := map[string]bool{}
+	var walk func(*class) string
+	walk = func(cl *class) string {
+		if cl == nil || seen[cl.name] {
+			return ""
+		}
+		seen[cl.name] = true
+		for _, f := range cl.fields {
+			if f.name == name {
+				return f.typ
+			}
+		}
+		for _, ref := range allParents(cl) {
+			if t := walk(ctx.syms.classFor(ref.name)); t != "" {
+				return t
+			}
+		}
+		return ""
+	}
+	return walk(c)
+}
+
+// inferType returns the GoOOP type of an expression, or "" if it cannot be
+// inferred. Untyped constants are marked "untyped.<kind>".
+func (ctx *inferCtx) inferType(e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.BasicLit:
+		return basicLitType(x.Kind)
+	case *ast.Ident:
+		switch x.Name {
+		case "true", "false":
+			return "untyped.bool"
+		case "nil":
+			return "untyped.nil"
+		case "self":
+			if ctx.self != nil {
+				return "*" + ctx.self.name
+			}
+		}
+		return ctx.scope[x.Name]
+	case *ast.ParenExpr:
+		return ctx.inferType(x.X)
+	case *ast.UnaryExpr:
+		if x.Op == gotoken.AND {
+			if inner := ctx.inferType(x.X); inner != "" {
+				return "*" + inner
+			}
+			return ""
+		}
+		return ctx.inferType(x.X)
+	case *ast.StarExpr:
+		if inner := ctx.inferType(x.X); strings.HasPrefix(inner, "*") {
+			return inner[1:]
+		}
+		return ""
+	case *ast.CompositeLit:
+		if x.Type != nil {
+			return printType(x.Type)
+		}
+	case *ast.SelectorExpr:
+		return ctx.inferSelector(x)
+	case *ast.CallExpr:
+		return ctx.inferCall(x)
+	case *ast.BinaryExpr:
+		lt, rt := ctx.inferType(x.X), ctx.inferType(x.Y)
+		if lt == rt {
+			return lt
+		}
+		if strings.HasPrefix(lt, "untyped.") {
+			return rt
+		}
+		return lt
+	}
+	return ""
+}
+
+func (ctx *inferCtx) inferSelector(x *ast.SelectorExpr) string {
+	var c *class
+	if id, ok := x.X.(*ast.Ident); ok && id.Name == "self" {
+		c = ctx.self
+	} else {
+		c = ctx.classByType(ctx.inferType(x.X))
+	}
+	if c == nil {
+		return ""
+	}
+	return normalizeIfType(ctx.fieldType(c, x.Sel.Name))
+}
+
+func (ctx *inferCtx) inferCall(x *ast.CallExpr) string {
+	switch fun := x.Fun.(type) {
+	case *ast.Ident:
+		if cl, ok := ctx.ctors[fun.Name]; ok {
+			return "*" + cl.name
+		}
+	case *ast.SelectorExpr:
+		var c *class
+		if id, ok := fun.X.(*ast.Ident); ok && id.Name == "self" {
+			c = ctx.self
+		} else {
+			c = ctx.classByType(ctx.inferType(fun.X))
+		}
+		if c == nil {
+			return ""
+		}
+		members := ctx.overloadGroup(c, fun.Sel.Name)
+		if len(members) == 0 {
+			return ""
+		}
+		idx := 0
+		if len(members) > 1 {
+			args := ctx.inferArgs(x.Args)
+			chosen, err := selectOverload(fun.Sel.Name, members, args)
+			if err != nil {
+				return ""
+			}
+			idx = chosen
+		}
+		return normalizeIfType(members[idx].returns)
+	}
+	return ""
+}
+
+func (ctx *inferCtx) inferArgs(args []ast.Expr) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = ctx.inferType(a)
+	}
+	return out
+}
+
+func normalizeIfType(t string) string {
+	if strings.TrimSpace(t) == "" {
+		return ""
+	}
+	return normalizeType(t)
+}
+
+// overloadMethodName is the generated Go name of one member of an overloaded
+// method set (visibility-correct base + signature suffix).
+func overloadMethodName(m method) string {
+	base := m.name
+	if m.mods["public"] {
+		base = exported(base)
+	}
+	suf, _ := overloadSuffix(m.params)
+	return base + "__" + suf
+}
+
+// ctorOverloadName is the generated Go name of one member of an overloaded
+// constructor set.
+func ctorOverloadName(c *class, ctor method) string {
+	suf, _ := overloadSuffix(ctor.params)
+	return ctorName(c) + "__" + suf
+}
+
+// zeroCtorEmitName returns the emitted Go name of a class's zero-argument
+// constructor (used when a subclass does not explicitly call super).
+func zeroCtorEmitName(c *class) (string, error) {
+	ctors := constructors(c)
+	for _, ctor := range ctors {
+		n, err := paramCount(ctor.params)
+		if err != nil {
+			return "", err
+		}
+		if n == 0 {
+			if len(ctors) == 1 {
+				return ctorName(c), nil
+			}
+			return ctorOverloadName(c, ctor), nil
+		}
+	}
+	return "", fmt.Errorf("%s has no zero-argument constructor", c.name)
+}
+
+// resolveOverloadCalls performs semantic analysis over a parsed body: it builds
+// local type bindings, then rewrites every overloaded method and constructor
+// call to the specific generated name. Diagnostics (ambiguous, no-match,
+// uninferrable) are surfaced as errors.
+func (ctx *inferCtx) resolveOverloadCalls(root ast.Node) error {
+	// Pass 1: collect local variable types in source order.
+	ast.Inspect(root, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			if x.Tok == gotoken.DEFINE {
+				for i, lhs := range x.Lhs {
+					id, ok := lhs.(*ast.Ident)
+					if !ok || id.Name == "_" || i >= len(x.Rhs) {
+						continue
+					}
+					if t := ctx.inferType(x.Rhs[i]); t != "" {
+						ctx.scope[id.Name] = t
+					}
+				}
+			}
+		case *ast.DeclStmt:
+			gd, ok := x.Decl.(*ast.GenDecl)
+			if !ok || gd.Tok != gotoken.VAR {
+				return true
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				declared := ""
+				if vs.Type != nil {
+					declared = printType(vs.Type)
+				}
+				for i, nm := range vs.Names {
+					if declared != "" {
+						ctx.scope[nm.Name] = declared
+					} else if i < len(vs.Values) {
+						ctx.scope[nm.Name] = ctx.inferType(vs.Values[i])
+					}
+				}
+			}
+		}
+		return true
+	})
+	// Pass 2: rewrite overloaded calls.
+	ast.Inspect(root, func(n ast.Node) bool {
+		if ctx.err != nil {
+			return false
+		}
+		if call, ok := n.(*ast.CallExpr); ok {
+			ctx.rewriteCall(call)
+		}
+		return true
+	})
+	return ctx.err
+}
+
+func (ctx *inferCtx) fail(err error) {
+	if ctx.err == nil {
+		ctx.err = err
+	}
+}
+
+func (ctx *inferCtx) rewriteCall(call *ast.CallExpr) {
+	switch fun := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		var c *class
+		if id, ok := fun.X.(*ast.Ident); ok && id.Name == "self" {
+			c = ctx.self
+		} else {
+			c = ctx.classByType(ctx.inferType(fun.X))
+		}
+		if c == nil {
+			return
+		}
+		members := ctx.overloadGroup(c, fun.Sel.Name)
+		if len(members) < 2 {
+			return // not overloaded
+		}
+		idx, err := selectOverload(fun.Sel.Name, members, ctx.inferArgs(call.Args))
+		if err != nil {
+			ctx.fail(err)
+			return
+		}
+		fun.Sel = ast.NewIdent(overloadMethodName(members[idx]))
+	case *ast.Ident:
+		cl, ok := ctx.ctors[fun.Name]
+		if !ok {
+			return
+		}
+		ctors := constructors(cl)
+		if len(ctors) < 2 {
+			return
+		}
+		idx, err := selectOverload(cl.name, ctors, ctx.inferArgs(call.Args))
+		if err != nil {
+			ctx.fail(err)
+			return
+		}
+		fun.Name = ctorOverloadName(cl, ctors[idx])
+	}
+}
