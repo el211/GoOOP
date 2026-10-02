@@ -231,7 +231,8 @@ method bodies, plus the explicit GoOOP constructs documented below.
 | Class generics | Supported using Go type parameters, e.g. `class Box[T any]` and `new Box[int](3)`; superclass type arguments such as `extends Base[string]` supported. |
 | Constructor overloads | Supported **by argument count and type**, resolved statically by the typed IR. `new T(...)` and `super(...)` are matched against the constructor set using inferred argument types; each overload emits a distinct signature-mangled symbol. |
 | Method overloads | Supported **by argument count and type** (Java-style, resolved at compile time). Overloads may differ in parameter types and return type; they must be concrete, nonvirtual instance methods. Each call site is resolved against the symbol table and typed AST and rewritten to a distinct generated method — there is no runtime dispatcher. Ambiguous, unmatched or uninferrable calls are rejected with a GoOOP diagnostic. |
-| Override signatures | Compare parameter and result **types**, ignoring parameter names; direct and transitive generic superclass type arguments are specialized during validation. |
+| Override signatures | Parameters must match by **type** (names ignored); the return type must be identical or a **covariant subtype** (checked through the class hierarchy). Generic superclass type arguments are substituted during validation. Covariant returns are accepted for non-virtual overrides; a covariant return on a *virtual/abstract* method is rejected with a diagnostic (the dispatch bridge is a planned milestone). |
+| Inherited-member resolution | A subclass sees the **merged** overload set of its ancestors: inherited `Show(int)` and an own `Show(string)` coexist instead of the child hiding the parent (as raw Go embedding would). Resolution traverses the full hierarchy, substitutes generics, collapses overrides, omits private members, and mangles every member of an overload family to a collision-free Go name so promotion works. |
 | Field initializers | Supported: fields initialize in declaration order, after superclass construction and before the class constructor body. |
 | `static` members | Supported: `static` fields become package-level `var ClassName_field` initialized once; `static` methods become `func ClassName_Method(...)`. Access both as `ClassName.member` inside `.goop`. Static members cannot combine with `abstract`/`virtual`/`override` or be overloaded. |
 | Enums | Supported: `enum Color { Red, Green, Blue }` lowers to a `type Color int` with `iota` constants, a generated `String()` method, and `Color.Member` access. Enum members with associated data or methods are not yet supported. |
@@ -379,7 +380,8 @@ GoOOP today, grouped by how hard each is given that GoOOP rewrites to Go.
 | Class-level visibility (public/private/protected) | ✅ supported | Java top-level rules enforced; private nested classes access-checked and emitted unexported. |
 | Full member `private` / `protected` enforcement | ⚠️ partial | Diagnostics exist; full enforcement across arbitrary Go expressions needs a resolver. |
 | Constructor-time virtual dispatch | ❌ | Java's partially-initialized subclass semantics. |
-| Covariant return types | ❌ | Override currently compares exact result types. |
+| Covariant return types | ✅ supported (non-virtual) | Validated through the class hierarchy (pointer covariance `*Derived <: *Base`, interface implementation). Works via Go shadowing for non-virtual overrides; virtual/abstract covariant overrides are rejected pending the dispatch-bridge milestone. |
+| Inherited overload merging | ✅ supported | Merged across single, multi-level and multiple/diamond inheritance; same-signature promotion from two parents is reported as ambiguous and requires an explicit override. |
 | Overloaded virtual / interface methods | ❌ | Requires typed dispatch tables. |
 
 **C. Hard or un-idiomatic in Go — may never reach 1:1 parity**
@@ -428,21 +430,30 @@ resolution → semantic analysis → Go code generation → gofmt
   returns); each candidate is scored by assignability and specificity; the
   winner's distinct signature-mangled name is written at the call site. No
   runtime `...any` dispatcher is emitted.
+- **Inherited-member resolution** (`SymbolTable.mergedMethods`): resolves the
+  overload set visible on a class across its whole hierarchy — substituting
+  generic superclass type arguments, collapsing overrides, and omitting private
+  members. A package-wide pass then marks every member of an overload family so
+  parent and child emit and call consistent mangled names, and covariant
+  overrides are validated through the hierarchy (`SymbolTable.isSubtype`).
 
 Delivered incrementally; milestones so far resolve package-private classes
-end-to-end and perform static same-arity overload resolution (see
-`resolve_test.go`, `overload_test.go`, and the integration tests
-`TestPackagePrivateClassFullyUnexportedViaTypedIR` and
-`TestSameArityMethodOverloadByType`). The remaining string-based lowering of
-`new`/`this`/`super`/static access is being migrated onto the same resolver in
-subsequent milestones.
+end-to-end, perform static same-arity overload resolution, and unify inherited
+members with covariant-return validation (see `resolve_test.go`,
+`overload_test.go`, `inherit_test.go`, and integration tests such as
+`TestPackagePrivateClassFullyUnexportedViaTypedIR`,
+`TestSameArityMethodOverloadByType` and `TestMultipleInheritanceMergedOverloads`).
+The remaining string-based lowering of `new`/`this`/`super`/static access — and
+the virtual-dispatch bridge needed for covariant returns on virtual methods — are
+being migrated onto the same resolver in subsequent milestones.
 
 ## Roadmap
 
 1. ✅ Typed IR foundation: symbol table + AST-based type/identifier resolution.
 2. ✅ True package-private unexported emission through resolved references.
 3. ✅ Same-arity method/constructor overloading via static type resolution.
-4. Covariant return types and full inherited-member/override resolution.
+4. ✅ Unified inherited-member resolution, merged overload sets, and covariant
+   return validation (virtual-dispatch bridge for covariant returns pending).
 5. Full source-level visibility checks and constructor dispatch semantics.
 6. Operator expression lowering and opt-in executable annotation processors.
 7. Language-server diagnostics, source maps and incremental package graph.
