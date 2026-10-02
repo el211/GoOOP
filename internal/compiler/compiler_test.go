@@ -135,6 +135,24 @@ func main() { _ = new Child(); _ = Child_Kind() }`
 		}
 	}
 }
+func TestTopLevelClassCannotBePrivateOrProtected(t *testing.T) {
+	for _, vis := range []string{"private", "protected"} {
+		src := "package main\n" + vis + " class Thing { Get() int { return 1 } }\nfunc main() { _ = new Thing().Get() }"
+		_, err := Compile("tl.goop", []byte(src))
+		if err == nil || !strings.Contains(err.Error(), "cannot be "+vis) {
+			t.Fatalf("%s top-level class should be rejected, got: %v", vis, err)
+		}
+	}
+}
+func TestClassRejectsDoubleVisibility(t *testing.T) {
+	src := `package main
+class Outer { public private class Inner { Get() int { return 1 } } }
+func main() { _ = new Outer_Inner().Get() }`
+	_, err := Compile("dv.goop", []byte(src))
+	if err == nil || !strings.Contains(err.Error(), "more than one visibility") {
+		t.Fatalf("expected double-visibility rejection, got: %v", err)
+	}
+}
 func TestNestedClassFlattensToTopLevel(t *testing.T) {
 	src := `package main
 class Outer {

@@ -39,6 +39,11 @@ type class struct {
 	fields                                         []field
 	methods                                        []method
 	nested                                         []*class
+	// visibility is "public", "protected", "private" or "" (package-private).
+	visibility string
+	// enclosing is the top-level class that lexically contains this class, or
+	// "" for a top-level class. Used for Java `private` nested-class scoping.
+	enclosing string
 }
 type iface struct {
 	name, typeParams string
@@ -235,7 +240,7 @@ func (p *parser) parse() (*unit, error) {
 	if first == len(p.toks) {
 		return nil, fmt.Errorf("no class, interface or function declarations")
 	}
-	for first > 0 && (p.toks[first-1].value == "abstract" || p.toks[first-1].value == "final") {
+	for first > 0 && isClassModifier(p.toks[first-1].value) {
 		first--
 	}
 	u.header = strings.TrimSpace(p.src[:p.toks[first].start])
@@ -248,15 +253,25 @@ func (p *parser) parse() (*unit, error) {
 		if err != nil {
 			return nil, err
 		}
+		kind := ""
+		for k := p.at; k < len(p.toks); k++ {
+			if !isClassModifier(p.toks[k].value) {
+				kind = p.toks[k].value
+				break
+			}
+		}
 		switch {
-		case p.peek("abstract") || p.peek("final") || p.peek("class"):
+		case kind == "class":
 			c, err := p.parseClass()
 			if err != nil {
 				return nil, err
 			}
+			if c.visibility == "private" || c.visibility == "protected" {
+				return nil, fmt.Errorf("top-level class %s cannot be %s (only public or package-private)", c.name, c.visibility)
+			}
 			c.annotations = annotations
 			u.classes = append(u.classes, c)
-			hoistNested(u, c)
+			hoistNested(u, c, c.name)
 		case p.peek("interface"):
 			in, err := p.parseInterface()
 			if err != nil {
@@ -293,9 +308,18 @@ func (p *parser) parse() (*unit, error) {
 	}
 	return u, nil
 }
+func isClassModifier(v string) bool {
+	switch v {
+	case "public", "private", "protected", "abstract", "final":
+		return true
+	}
+	return false
+}
+
 // hoistNested flattens nested classes into top-level classes named
 // `Outer_Inner`, recording the dotted mapping so `Outer.Inner` can be rewritten.
-func hoistNested(u *unit, c *class) {
+// topLevel is the outermost enclosing class, used for `private` nested scoping.
+func hoistNested(u *unit, c *class, topLevel string) {
 	for _, n := range c.nested {
 		if u.nestedDotted == nil {
 			u.nestedDotted = map[string]map[string]bool{}
@@ -305,18 +329,24 @@ func hoistNested(u *unit, c *class) {
 		}
 		u.nestedDotted[c.name][n.name] = true
 		n.name = c.name + "_" + n.name
+		n.enclosing = topLevel
 		u.classes = append(u.classes, n)
-		hoistNested(u, n)
+		hoistNested(u, n, topLevel)
 	}
 }
 func (p *parser) parseClass() (*class, error) {
 	c := &class{}
-	for p.peek("abstract") || p.peek("final") {
-		switch p.take().value {
+	for p.peek("abstract") || p.peek("final") || p.peek("public") || p.peek("private") || p.peek("protected") {
+		switch tok := p.take().value; tok {
 		case "abstract":
 			c.abstract = true
 		case "final":
 			c.final = true
+		default: // visibility
+			if c.visibility != "" {
+				return nil, p.fail(p.at, "class has more than one visibility modifier")
+			}
+			c.visibility = tok
 		}
 	}
 	if c.abstract && c.final {
@@ -411,12 +441,24 @@ func (p *parser) parseClass() (*class, error) {
 			break
 		}
 		if p.peek("class") {
-			nc, err := p.parseClass() // modifiers already consumed any abstract/final
+			nc, err := p.parseClass() // modifiers already consumed any abstract/final/visibility
 			if err != nil {
 				return nil, err
 			}
 			nc.abstract = nc.abstract || mods["abstract"]
 			nc.final = nc.final || mods["final"]
+			vis := []string{}
+			for _, v := range []string{"public", "protected", "private"} {
+				if mods[v] {
+					vis = append(vis, v)
+				}
+			}
+			if len(vis) > 1 {
+				return nil, p.fail(p.at, "nested class "+nc.name+" has more than one visibility modifier")
+			}
+			if len(vis) == 1 {
+				nc.visibility = vis[0]
+			}
 			nc.annotations = annotations
 			c.nested = append(c.nested, nc)
 			continue
