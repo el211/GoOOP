@@ -1337,11 +1337,18 @@ func unexported(s string) string {
 	return strings.ToLower(s[:1]) + s[1:]
 }
 
-// goTypeName is the Go identifier emitted for a class. A `private` class is
-// unexported so native Go in other packages cannot reach it, keeping private
-// implementations out of the generated public API.
+// unexportedClass reports whether a class must be emitted with an unexported Go
+// identifier. Following Java, `private` and package-private (default) classes are
+// not visible outside their package, so they are unexported; `public` and
+// `protected` classes stay exported (protected needs cross-package subclassing).
+func unexportedClass(c *class) bool {
+	return c.visibility != "public" && c.visibility != "protected"
+}
+
+// goTypeName is the Go identifier emitted for a class, keeping its visibility
+// out of the generated public API.
 func goTypeName(c *class) string {
-	if c.visibility == "private" {
+	if unexportedClass(c) {
 		return unexported(c.name)
 	}
 	return c.name
@@ -1356,7 +1363,7 @@ func goFieldName(classes map[string]*class, name string) string {
 	return name
 }
 func ctorName(c *class) string {
-	if c.abstract || c.visibility == "private" {
+	if c.abstract || unexportedClass(c) {
 		return "new" + c.name
 	}
 	return "New" + c.name
@@ -1547,7 +1554,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("%s constructor: %w", c.name, err)
 			}
-			b.WriteString(converted)
+			b.WriteString(resolveStmts(converted, syms))
 			b.WriteString("\nself.__goopBind(self)\nreturn self\n}\n\n")
 		}
 		methodGroups := map[string][]method{}
@@ -1583,7 +1590,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 				if err != nil {
 					return "", fmt.Errorf("%s.%s: %w", c.name, m.name, err)
 				}
-				b.WriteString(converted)
+				b.WriteString(resolveStmts(converted, syms))
 			} else {
 				fmt.Fprintf(&b, "panic(%q)\n", "abstract method "+c.name+"."+m.name)
 			}
@@ -1644,7 +1651,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 		// declarations when multiple .goop files belong to one package. A
 		// private class gets an unexported metadata var so it stays package-local.
 		metaName := "GoOOPMetadata" + c.name
-		if c.visibility == "private" {
+		if unexportedClass(c) {
 			metaName = "goOOPMetadata" + c.name
 		}
 		fmt.Fprintf(&b, "var %s = map[string]any{\n", metaName)
@@ -1669,7 +1676,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		b.WriteString(converted)
+		b.WriteString(resolveFunc(converted, syms))
 		b.WriteString("\n\n")
 	}
 	return b.String(), nil
@@ -1750,7 +1757,7 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 					return "", fmt.Errorf("cannot instantiate abstract class %s", mangled)
 				}
 				ctorName := "New" + mangled
-				if target.visibility == "private" {
+				if unexportedClass(target) {
 					ctorName = "new" + mangled
 				}
 				open := genericCallOpen(ts, i+4)
@@ -1775,7 +1782,7 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 				return "", fmt.Errorf("cannot instantiate abstract class %s", name)
 			}
 			ctorName := "New" + name
-			if target := classes[name]; target != nil && target.visibility == "private" {
+			if target := classes[name]; target != nil && unexportedClass(target) {
 				ctorName = "new" + name
 			}
 			open := genericCallOpen(ts, i+2)

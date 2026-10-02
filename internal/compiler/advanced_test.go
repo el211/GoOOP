@@ -39,7 +39,7 @@ func main() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(outputs["animal.goop"]), "type Animal[T any] struct") {
+	if !strings.Contains(string(outputs["animal.goop"]), "type animal[T any] struct") {
 		t.Fatalf("generic type not generated:\n%s", outputs["animal.goop"])
 	}
 	dir := t.TempDir()
@@ -58,6 +58,71 @@ func main() {
 		t.Fatalf("generated code failed: %v\n%s", err, result)
 	}
 	if !strings.Contains(string(result), "animal:dog3") || !strings.Contains(string(result), "Serializable") {
+		t.Fatalf("unexpected output %q", result)
+	}
+}
+
+func TestPackagePrivateClassFullyUnexportedViaTypedIR(t *testing.T) {
+	// Repo is package-private (unmarked) and is referenced as a field type, a
+	// local-variable type and in `new` expressions. The typed IR must resolve
+	// every one of those references to the unexported Go name `repo`, while the
+	// public Service keeps its exported API.
+	src := `package main
+import "fmt"
+class Repo {
+    private items int
+    constructor() { this.items = 0 }
+    Count() int { return this.items }
+    Add() { this.items = this.items + 1 }
+}
+public class Service {
+    private store *Repo
+    constructor() { this.store = new Repo() }
+    Use() int {
+        var r *Repo = this.store
+        r.Add()
+        r.Add()
+        return r.Count()
+    }
+}
+func main() { fmt.Println(new Service().Use()) }`
+	out, err := Compile("svc.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	// Package-private class: unexported type, constructor and field reference.
+	for _, want := range []string{"type repo struct", "func newRepo() *repo", "store *repo", "var r *repo = self.store"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+	// Public class: exported type and constructor.
+	for _, want := range []string{"type Service struct", "func NewService() *Service"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in:\n%s", want, got)
+		}
+	}
+	// The package-private class must not leak an exported symbol.
+	for _, bad := range []string{"type Repo struct", "func NewRepo", "GoOOPMetadataRepo "} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("package-private class leaked %q:\n%s", bad, got)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/svc\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "svc_goop.go"), out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s", err, result)
+	}
+	if strings.TrimSpace(string(result)) != "2" {
 		t.Fatalf("unexpected output %q", result)
 	}
 }
@@ -179,7 +244,7 @@ func main() {
 		t.Fatal(err)
 	}
 	got := string(out)
-	for _, want := range []string{"var box Outer_Inner = *NewOuter_Inner(7)"} {
+	for _, want := range []string{"var box outer_Inner = *newOuter_Inner(7)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in:\n%s", want, got)
 		}
@@ -220,7 +285,7 @@ func main() {
 		t.Fatal(err)
 	}
 	got := string(out)
-	for _, want := range []string{"func (self *Person) GetName() string", "func (self *Person) SetName(value string)", "name string"} {
+	for _, want := range []string{"func (self *person) GetName() string", "func (self *person) SetName(value string)", "name string"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in:\n%s", want, got)
 		}
@@ -292,7 +357,7 @@ func main() {
 		t.Fatal(err)
 	}
 	got := string(out)
-	for _, want := range []string{"var Counter_total int = 0", "func Counter_Bump(n int) int", "Counter_total = Counter_total + n"} {
+	for _, want := range []string{"var counter_total int = 0", "func counter_Bump(n int) int", "counter_total = counter_total + n"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in:\n%s", want, got)
 		}

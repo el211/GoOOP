@@ -78,7 +78,7 @@ func main() { fmt.Println(new Dog("ok").Get()) }
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`// this.name and new Dog("ignored")`, `"this.name and new Dog(ignored)"`, `return self.name`, `NewDog("ok").Get()`} {
+	for _, want := range []string{`// this.name and new Dog("ignored")`, `"this.name and new Dog(ignored)"`, `return self.name`, `newDog("ok").Get()`} {
 		if !strings.Contains(string(got), want) {
 			t.Fatalf("missing %q in\n%s", want, got)
 		}
@@ -129,7 +129,7 @@ func main() { _ = new Child(); _ = Child_Kind() }`
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"func NewChild() *Child", "self.Base = *NewBase()", "func Child_Kind() string"} {
+	for _, want := range []string{"func newChild() *child", "self.base = *newBase()", "func child_Kind() string"} {
 		if !strings.Contains(string(generated), want) {
 			t.Fatalf("expected %q", want)
 		}
@@ -208,7 +208,7 @@ func main() { _ = new Outer("x"); _ = new Outer_Inner().Get() }`
 		t.Fatal(err)
 	}
 	got := string(out)
-	for _, want := range []string{"type Outer struct", "type Outer_Inner struct", "func NewOuter_Inner() *Outer_Inner", "func (self *Outer_Inner) Get() int"} {
+	for _, want := range []string{"type outer struct", "type outer_Inner struct", "func newOuter_Inner() *outer_Inner", "func (self *outer_Inner) Get() int"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in:\n%s", want, got)
 		}
@@ -271,7 +271,7 @@ func main() { _ = new Counter("a"); _ = Counter_count }`
 		t.Fatal(err)
 	}
 	got := string(generated)
-	for _, want := range []string{"var Counter_count int = 0", "label string"} {
+	for _, want := range []string{"var counter_count int = 0", "label string"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in:\n%s", want, got)
 		}

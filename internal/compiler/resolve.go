@@ -144,6 +144,92 @@ func printFieldList(fl *ast.FieldList) string {
 	return strings.Join(parts, ", ")
 }
 
+// metaRenameMap maps the exported metadata variable name of each unexported
+// class to its unexported form, so references in bodies stay consistent.
+func metaRenameMap(syms *SymbolTable) map[string]string {
+	m := map[string]string{}
+	for _, sym := range syms.byName {
+		if sym.Kind == "class" && sym.GoName != sym.Name {
+			m["GoOOPMetadata"+sym.Name] = "goOOPMetadata" + sym.Name
+		}
+	}
+	return m
+}
+
+// resolveNode rewrites type references and metadata identifiers inside a parsed
+// Go AST. Type references are only touched in genuine type positions (var/const
+// specs, composite-literal and type-assertion types, field types), so value
+// identifiers are never misinterpreted as types.
+func resolveNode(n ast.Node, syms *SymbolTable) {
+	meta := metaRenameMap(syms)
+	ast.Inspect(n, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.ValueSpec:
+			if x.Type != nil {
+				x.Type = resolveExpr(x.Type, syms)
+			}
+		case *ast.CompositeLit:
+			if x.Type != nil {
+				x.Type = resolveExpr(x.Type, syms)
+			}
+		case *ast.TypeAssertExpr:
+			if x.Type != nil {
+				x.Type = resolveExpr(x.Type, syms)
+			}
+		case *ast.Field:
+			if x.Type != nil {
+				x.Type = resolveExpr(x.Type, syms)
+			}
+		case *ast.Ident:
+			if r, ok := meta[x.Name]; ok {
+				x.Name = r
+			}
+		}
+		return true
+	})
+}
+
+// resolveStmts resolves type references and metadata identifiers in a statement
+// list (a method or constructor body). Parse failures leave the body untouched.
+func resolveStmts(body string, syms *SymbolTable) string {
+	fset := gotoken.NewFileSet()
+	file, err := goparser.ParseFile(fset, "body.go", "package p\nfunc _() {\n"+body+"\n}\n", goparser.ParseComments)
+	if err != nil {
+		return body
+	}
+	resolveNode(file, syms)
+	var out strings.Builder
+	if err := format.Node(&out, fset, file); err != nil {
+		return body
+	}
+	s := out.String()
+	open := strings.Index(s, "{")
+	closeAt := strings.LastIndex(s, "}")
+	if open < 0 || closeAt <= open {
+		return body
+	}
+	return strings.TrimSpace(s[open+1 : closeAt])
+}
+
+// resolveFunc resolves a complete top-level function declaration.
+func resolveFunc(fn string, syms *SymbolTable) string {
+	fset := gotoken.NewFileSet()
+	file, err := goparser.ParseFile(fset, "fn.go", "package p\n"+fn+"\n", goparser.ParseComments)
+	if err != nil {
+		return fn
+	}
+	resolveNode(file, syms)
+	var out strings.Builder
+	if err := format.Node(&out, fset, file); err != nil {
+		return fn
+	}
+	s := out.String()
+	if idx := strings.Index(s, "func "); idx >= 0 {
+		return strings.TrimSpace(s[idx:])
+	}
+	return fn
+}
+
 func printResults(fl *ast.FieldList) string {
 	if fl == nil || len(fl.List) == 0 {
 		return ""

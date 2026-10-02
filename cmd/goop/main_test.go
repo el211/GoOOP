@@ -33,7 +33,7 @@ func TestCLITemporaryBuildAndExplicitExport(t *testing.T) {
 		"go.mod": "module example.org/zoo\n\ngo 1.22\n",
 		"app.goop": `package main
 import "fmt"
-class Dog {
+public class Dog {
     private name string
     constructor(name string) { this.name = name }
     Speak() string { return this.name + ": Woof!" }
