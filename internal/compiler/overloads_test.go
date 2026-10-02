@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -191,6 +192,48 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestOverloadResolvedAcrossFiles(t *testing.T) {
+	// The overloaded class is declared in one file and called from another in
+	// the same package; resolution uses the package-wide symbol table.
+	sources := map[string][]byte{
+		"calc.goop": []byte(`package main
+public class Calc {
+    constructor() {}
+    Op(a int) int { return a + 1 }
+    Op(a int, b int) int { return a * b }
+}`),
+		"main.goop": []byte(`package main
+import "fmt"
+func main() {
+    c := new Calc()
+    fmt.Println(c.Op(10))
+    fmt.Println(c.Op(3, 4))
+}`),
+	}
+	outputs, err := CompileFiles(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/xfile\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for path, out := range outputs {
+		if err := os.WriteFile(filepath.Join(dir, strings.TrimSuffix(path, ".goop")+"_goop.go"), out, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s", err, result)
+	}
+	if string(result) != "11\n12\n" {
+		t.Fatalf("got %q", result)
+	}
 }
 
 func TestMethodOverloadsDistinctArity(t *testing.T) {
