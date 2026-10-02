@@ -62,6 +62,58 @@ func main() {
 	}
 }
 
+func TestPrivateClassAsSuperclassWithinEnclosing(t *testing.T) {
+	src := `package main
+import "fmt"
+class Outer {
+    private class Base {
+        protected label string
+        constructor(label string) { this.label = label }
+        Label() string { return this.label }
+    }
+    class Derived extends Outer_Base {
+        constructor() { super("deep") }
+    }
+    Make() string { return new Outer.Derived().Label() }
+}
+func main() { fmt.Println(new Outer().Make()) }`
+	out, err := Compile("inherit.goop", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "type outer_Base struct") || !strings.Contains(got, "self.outer_Base = *newOuter_Base(") {
+		t.Fatalf("expected unexported private base embedding in:\n%s", got)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.org/inherit\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "inherit_goop.go"), out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	result, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated code failed: %v\n%s", err, result)
+	}
+	if strings.TrimSpace(string(result)) != "deep" {
+		t.Fatalf("unexpected output %q", result)
+	}
+}
+
+func TestPrivateClassAsSuperclassFromOutsideRejected(t *testing.T) {
+	src := `package main
+class Outer { private class Base { Label() string { return "x" } } }
+class Other extends Outer_Base {}
+func main() { _ = new Other() }`
+	_, err := Compile("bad.goop", []byte(src))
+	if err == nil || !strings.Contains(err.Error(), "cannot extend private class") {
+		t.Fatalf("expected private-superclass rejection from outside, got: %v", err)
+	}
+}
+
 func TestPrivateNestedClassIsUnexportedAndRuns(t *testing.T) {
 	src := `package main
 import "fmt"

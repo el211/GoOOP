@@ -996,9 +996,6 @@ func checkVisibilityAccess(u *unit, classes map[string]*class) error {
 			if p == nil {
 				continue
 			}
-			if p.visibility == "private" {
-				return fmt.Errorf("%s: a private class (%s) cannot be used as a superclass", c.name, ref.name)
-			}
 			if !classAccessible(p, top) {
 				return fmt.Errorf("%s: cannot extend %s class %s", c.name, p.visibility, ref.name)
 			}
@@ -1345,6 +1342,15 @@ func goTypeName(c *class) string {
 	}
 	return c.name
 }
+
+// goFieldName is the Go identifier used to embed/select a class by name,
+// resolving to its (possibly unexported) emitted type name.
+func goFieldName(classes map[string]*class, name string) string {
+	if cl := classes[name]; cl != nil {
+		return goTypeName(cl)
+	}
+	return name
+}
 func ctorName(c *class) string {
 	if c.abstract || c.visibility == "private" {
 		return "new" + c.name
@@ -1431,7 +1437,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 		gn := goTypeName(c) // Go type identifier (unexported when the class is private)
 		fmt.Fprintf(&b, "type %s%s struct {\n", gn, declaredParams(c.typeParams))
 		for _, ref := range allParents(c) {
-			fmt.Fprintf(&b, "%s%s\n", ref.name, ref.args)
+			fmt.Fprintf(&b, "%s%s\n", goFieldName(classes, ref.name), ref.args)
 		}
 		for _, f := range c.fields {
 			if f.mods["static"] {
@@ -1467,7 +1473,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 		}
 		fmt.Fprintf(&b, "func (self *%s%s) __goopBind(v any) {\n", gn, usedParams(c.typeArgs))
 		for _, ref := range allParents(c) {
-			fmt.Fprintf(&b, "self.%s.__goopBind(v)\n", ref.name)
+			fmt.Fprintf(&b, "self.%s.__goopBind(v)\n", goFieldName(classes, ref.name))
 		}
 		if len(slots) > 0 {
 			b.WriteString("self.__goopSelf = v.(interface {\n")
@@ -1509,7 +1515,7 @@ func emit(u *unit, classes map[string]*class) (string, error) {
 					if err != nil {
 						return "", fmt.Errorf("%s constructor: explicitly initialize %s because %w", c.name, ref.name, err)
 					}
-					fmt.Fprintf(&b, "self.%s = *%s%s()\n", ref.name, parentCtor, ref.args)
+					fmt.Fprintf(&b, "self.%s = *%s%s()\n", goFieldName(classes, ref.name), parentCtor, ref.args)
 				}
 			}
 			body = rest
@@ -1799,7 +1805,7 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 						refArgs = ref.args
 					}
 				}
-				edits = append(edits, replacement{t.start, ts[i+2].end, "self." + chosenParent + " = *" + chosen + refArgs})
+				edits = append(edits, replacement{t.start, ts[i+2].end, "self." + goFieldName(classes, chosenParent) + " = *" + chosen + refArgs})
 				i += 2
 				continue
 			}
@@ -1822,7 +1828,7 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 				if err != nil {
 					return "", err
 				}
-				edits = append(edits, replacement{t.start, t.end, "self." + c.parent + " = *" + chosen + c.parentArgs})
+				edits = append(edits, replacement{t.start, t.end, "self." + goFieldName(classes, c.parent) + " = *" + chosen + c.parentArgs})
 				continue
 			}
 			if i+2 < len(ts) && ts[i+1].value == "." && containsParent(c, ts[i+2].value) {
@@ -1841,11 +1847,11 @@ func rewrite(body string, c *class, classes map[string]*class, enums map[string]
 						}
 					}
 				}
-				edits = append(edits, replacement{t.start, ts[i+2].end, "self." + ts[i+2].value})
+				edits = append(edits, replacement{t.start, ts[i+2].end, "self." + goFieldName(classes, ts[i+2].value)})
 				i += 2
 				continue
 			}
-			edits = append(edits, replacement{t.start, t.end, "self." + c.parent})
+			edits = append(edits, replacement{t.start, t.end, "self." + goFieldName(classes, c.parent)})
 			continue
 		}
 		if t.value == "this" {
