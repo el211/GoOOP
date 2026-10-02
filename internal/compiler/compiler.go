@@ -639,6 +639,7 @@ func (p *parser) parseMethod(name string, mods map[string]bool) (method, error) 
 	}
 	return m, nil
 }
+
 // parseEnum accepts `enum Name { A, B, C }`; members are identifiers separated
 // by commas and/or newlines, with an optional trailing comma.
 func (p *parser) parseEnum() (enumDecl, error) {
